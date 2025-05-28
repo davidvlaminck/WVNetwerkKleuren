@@ -1,0 +1,14 @@
+Package          Version
+---------------- -----------
+geoarrow-c       0.3.0
+geoarrow-pyarrow 0.2.0
+geoarrow-types   0.3.0
+numpy            2.2.6
+pandas           2.2.3
+pip              23.2.1
+pyarrow          20.0.0
+python-dateutil  2.9.0.post0
+pytz             2025.2
+six              1.17.0
+tzdata           2025.2
+uv               0.7.8
