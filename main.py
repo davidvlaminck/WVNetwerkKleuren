@@ -89,16 +89,10 @@ def assign_colors_to_table(filtered_table: pa.Table) -> pa.Table:
     def get_random_color() -> str:
         return random.choice(COLORS)
 
-    def assign_colors(row: pa.RecordBatch) -> pa.RecordBatch:
+    def assign_colors(row):
         aantal_verlichtingstoestellen = row['eigenschappen - lgc:installatie#vplmast|eig|aantal verlichtingstoestellen']
-        if aantal_verlichtingstoestellen > 0:
-            row['eigenschappen - lgc:installatie#vplmast|eig|netwerkconfigWV1'] = get_random_color()
-        if aantal_verlichtingstoestellen >= 2:
-            row['eigenschappen - lgc:installatie#vplmast|eig|netwerkconfigWV2'] = get_random_color()
-        if aantal_verlichtingstoestellen >= 3:
-            row['eigenschappen - lgc:installatie#vplmast|eig|netwerkconfigWV3'] = get_random_color()
-        if aantal_verlichtingstoestellen >= 4:
-            row['eigenschappen - lgc:installatie#vplmast|eig|netwerkconfigWV4'] = get_random_color()
+        for i in range(min(int(aantal_verlichtingstoestellen), 4)):
+            row[COLOR_COLUMN_NAMES[i]] = get_random_color()
         return row
 
     # Apply the assign_colors function to each row in the table
