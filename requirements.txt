@@ -1,14 +1,22 @@
-Package          Version
----------------- -----------
-geoarrow-c       0.3.0
-geoarrow-pyarrow 0.2.0
-geoarrow-types   0.3.0
-numpy            2.2.6
-pandas           2.2.3
-pip              23.2.1
-pyarrow          20.0.0
-python-dateutil  2.9.0.post0
-pytz             2025.2
-six              1.17.0
-tzdata           2025.2
-uv               0.7.8
+certifi==2025.4.26
+geoarrow-c==0.3.0
+geoarrow-pyarrow==0.2.0
+geoarrow-types==0.3.0
+geopandas==1.0.1
+iniconfig==2.1.0
+numpy==2.2.6
+packaging==25.0
+pandas==2.2.3
+pluggy==1.6.0
+point-cloud-utils==0.34.0
+pyarrow==20.0.0
+pyogrio==0.11.0
+pyproj==3.7.1
+pytest==8.3.5
+python-dateutil==2.9.0.post0
+pytz==2025.2
+scipy==1.15.3
+shapely==2.1.1
+six==1.17.0
+tzdata==2025.2
+uv==0.7.8

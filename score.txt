@@ -1,0 +1,9 @@
+- A) + 0,01 voor elke armatuur die een kleurcode heeft
+- B) + 10 per installatie wiens masten minder dan 8 kleuren gebruikt, voor elke kleur die niet gebruikt wordt een extra + 10
+C) + 25 per installatie waarvoor het aantal armaturen per kleur niet boven de 150 gaat
+* D) + 50 per kleurgroep per installatie als die 1000 meter afstand heeft tussen andere groepen met dezelfde kleur. Nog eens + 50 als die afstand 1500 meter is en nog eens + 50 voor 2000 meter
+E) + 50 per kleurgroep per installatie als elke armatuur een andere armatuur vindt binnen 170 meter die aan een andere lichtmast hangt
+F) + 50 per installatie die minder dan 150 armaturen bevat als die allemaal dezelfde kleurgroep hebben
+G) + 10 per kleurgroep als deze binnen een installatie geen wegnummers delen
+H) + 2 000 als nergens de kleur “Kleurloos” wordt gebruikt
+I) + 1 000 voor elke extra kleur die niet gebruikt is over alle armaturen heen
