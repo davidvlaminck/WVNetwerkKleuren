@@ -1,16 +1,11 @@
 import pyarrow as pa
 from shapely.geometry.point import Point
 
-from main import score_A_color_for_each_armature, score_B_minimize_colors_within_installation, \
-    score_D_distance_between_colored_group, score_E_distance_within_colored_group, score_H_I_total_amount_of_colors, \
-    score_F_uniform_color_per_installatie, score_C_max_150_armaturen_per_kleur_per_installatie
+from global_vars import COLOR_COLUMN_NAMES
+from score_functions import score_E_distance_within_colored_group, score_C_max_150_armaturen_per_kleur_per_installatie, \
+    score_D_distance_between_colored_group, score_A_color_for_each_armature, score_H_I_total_amount_of_colors, \
+    score_F_uniform_color_per_installatie, score_B_minimize_colors_within_installation
 
-COLORS = ['Cyan', 'Yellow', 'Magenta', 'Black', 'Blue', 'Red', 'Green', 'Kleurloos']
-COLOR_COLUMN_NAMES = [
-    'eigenschappen - lgc:installatie#vplmast|eig|netwerkconfigWV1',
-    'eigenschappen - lgc:installatie#vplmast|eig|netwerkconfigWV2',
-    'eigenschappen - lgc:installatie#vplmast|eig|netwerkconfigWV3',
-    'eigenschappen - lgc:installatie#vplmast|eig|netwerkconfigWV4']
 
 
 def test_score_A_color_for_each_armature():
