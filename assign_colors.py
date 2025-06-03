@@ -5,152 +5,8 @@ import pyarrow as pa
 from pyarrow import compute as pc
 from shapely import wkb
 
-from global_vars import COLORS, COLOR_COLUMN_NAMES
+from global_vars import COLORS, COLOR_COLUMN_NAMES, DISTANCE_BETWEEN_COLORED_GROUPS
 from score_functions import create_point_cloud
-
-
-def assign_colors_to_group_by_dict(grp_dict, group_dict: dict[str, dict], assigned_points=None) -> None:
-    # Early check: calculate total amount of colors to assign
-    table = grp_dict['table']
-    num_rows = table.num_rows
-    aant_col = 'eigenschappen - lgc:installatie#vplmast|eig|aantal verlichtingstoestellen'
-    aant_array = table[aant_col].to_pylist()
-    total_to_assign = 0
-    for n in aant_array:
-        n_colors = 0 if n is None or (isinstance(n, float) and np.isnan(n)) else int(n)
-        n_colors = min(n_colors, len(COLOR_COLUMN_NAMES))
-        total_to_assign += n_colors
-
-    if total_to_assign >= 150:
-        handle_large_color_assignment(grp_dict, total_to_assign)
-        return
-
-    center = grp_dict['center']
-
-    # get all nearby groups, not including itself, from group_dict where the center points are within 10000 meters of the center point
-    nearby_groups = {
-        key: value for key, value in group_dict.items()
-        if value['center'] is not None and not value['done'] and
-        np.linalg.norm(np.array(value['center']) - np.array(center)) < 10000 and
-        key != grp_dict['table']['installatie'][0].as_py()
-    }
-    print(f"Nearby groups for {grp_dict['table']['installatie'][0].as_py()}: {nearby_groups.keys()}")
-
-    possible_colors = set(COLORS)
-    possible_colors.discard('Kleurloos')
-    # for each nearby group, get its color. if the group's point cloud is within 2000 meters of grp_dict's point cloud,
-    # remove its color from the possible colors
-    # do not use the center pint of the group, but the point cloud
-    for nearby_group in nearby_groups.values():
-        pc1 = nearby_group['point cloud']
-        pc2 = grp_dict['point cloud']
-        if pc1.shape[0] > 0 and pc2.shape[0] > 0:
-            # Bounding box pre-filter: skip if boxes are farther than 2000m apart
-            min1, max1 = pc1.min(axis=0), pc1.max(axis=0)
-            min2, max2 = pc2.min(axis=0), pc2.max(axis=0)
-            dx = max(0, max(min2[0] - max1[0], min1[0] - max2[0]))
-            dy = max(0, max(min2[1] - max1[1], min1[1] - max2[1]))
-            min_box_dist = np.hypot(dx, dy)
-            if min_box_dist >= 2000:
-                continue  # Skip, no possible close points
-
-            # Compute pairwise distances between all points in the two point clouds
-            diff = pc1[:, np.newaxis, :] - pc2[np.newaxis, :, :]
-            distances_matrix = np.linalg.norm(diff, axis=2)
-            if np.any(distances_matrix < 2000):
-                color_val = nearby_group['table'][COLOR_COLUMN_NAMES[0]][0].as_py()
-                if color_val is not None:
-                    possible_colors.discard(color_val)
-        else:
-            continue
-
-    # Additional: Exclude colors already assigned to any point within 2000m (global check)
-    if assigned_points is not None:
-        pc2 = grp_dict['point cloud']
-        forbidden_colors = set()
-        for pt2 in pc2:
-            for assigned_pt, assigned_color in assigned_points:
-                if np.linalg.norm(pt2 - assigned_pt) < 2000:
-                    forbidden_colors.add(assigned_color)
-        possible_colors -= forbidden_colors
-
-    print(f"Possible colors for {grp_dict['table']['installatie'][0].as_py()}: {possible_colors}")
-
-    # Assign colors to each row based on its aantal_verlichtingstoestellen
-    # Prepare arrays for each color column
-    color_columns = {col: [None] * num_rows for col in COLOR_COLUMN_NAMES}
-    assigned_color = next(iter(possible_colors), None)
-    for i in range(num_rows):
-        n = aant_array[i]
-        n_colors = 0 if n is None or (isinstance(n, float) and np.isnan(n)) else int(n)
-        n_colors = min(n_colors, len(COLOR_COLUMN_NAMES))
-        # Assign the same color up to n_colors, rest None
-        assigned = [assigned_color] * n_colors + [None] * (len(COLOR_COLUMN_NAMES) - n_colors)
-        for j, col in enumerate(COLOR_COLUMN_NAMES):
-            color_columns[col][i] = assigned[j]
-    # Add or replace columns in the table
-    for col in COLOR_COLUMN_NAMES:
-        arr = pa.array(color_columns[col])
-        if col in table.schema.names:
-            table = table.set_column(table.schema.get_field_index(col), col, arr)
-        else:
-            table = table.append_column(col, arr)
-    grp_dict['table'] = table
-    grp_dict['done'] = True
-    # total count of assigned colors
-    total_assigned = 0
-    for col in COLOR_COLUMN_NAMES:
-        arr = grp_dict['table'][col]
-        # Count non-None values (PyArrow uses None for missing)
-        total_assigned += arr.to_pandas().notna().sum()
-    print(f"Total colors assigned in group {grp_dict['table']['installatie'][0].as_py()}: {total_assigned}")
-    grp_dict['amount_assigned'] = int(total_assigned)
-    grp_dict['color'] = assigned_color
-
-    # Update assigned_points with the new assignments
-    if assigned_points is not None and assigned_color is not None:
-        pc2 = grp_dict['point cloud']
-        for pt in pc2:
-            assigned_points.append((pt, assigned_color))
-
-    return
-
-def assign_colors_to_table(table: pa.Table) -> pa.Table:
-    # make a grouped dict of the table by 'installatie'
-    group_dict = group_table_by_installatie_with_point_cloud(table)
-
-    # Track all assigned points and their colors globally
-    assigned_points = []
-
-    # start with A2562
-    start_installatie = group_dict['A2562']
-    print(start_installatie['table'])
-
-    assign_colors_to_group_by_dict(start_installatie, group_dict=group_dict, assigned_points=assigned_points)
-
-    # find the nearest group that has not been done yet, use the distance between the centers of the point clouds
-    while True:
-        current_group = None
-        current_center = start_installatie['center']
-        min_distance = 100000
-        for installatie, grp_dict in group_dict.items():
-            if grp_dict['done'] or grp_dict['center'] is None:
-                continue
-            distance = np.linalg.norm(np.array(grp_dict['center']) - np.array(current_center))
-            if distance < min_distance:
-                min_distance = distance
-                current_group = grp_dict
-
-        if current_group is None:
-            print("No more groups to process.")
-            break
-        print(f"Next group to process: {current_group['table']['installatie'][0].as_py()} at distance {min_distance:.2f}m")
-        assign_colors_to_group_by_dict(current_group, group_dict=group_dict, assigned_points=assigned_points)
-
-    table = update_main_table(group_dict, table)
-
-    return table
-
 
 def create_point_cloud_with_indices(table):
     """
@@ -171,108 +27,239 @@ def create_point_cloud_with_indices(table):
     else:
         return np.zeros((0, 2)), np.array([], dtype=int)
 
-def handle_large_color_assignment(grp_dict, total_to_assign):
+def group_table_by_installatie_with_point_cloud(table: pa.Table):
     """
-    Assigns colors to a group with more than 150 assignments, splitting into subgroups of max 150,
-    each subgroup gets a unique color, and all records in a subgroup are within 170 meters of at least one other.
+    Groups the table by 'installatie'. For each group, stores a dict with:
+      - key 'table': the grouped pa.Table
+      - key 'point cloud': the result of create_point_cloud(group)
+      - key 'point cloud row indices': the table row indices for each point in the point cloud
+      - key 'bbox': (min_x, min_y, max_x, max_y) bounding box of the point cloud, or None if empty
+      - key 'center': the centroid (mean x, mean y) of the point cloud, or None if empty
+      - key 'done': whether the group has been processed
+      - key 'color': the color assigned to the group (None initially)
+    Returns: dict[installatie] = {...}
     """
+
+
+
+    installaties = table['installatie'].to_numpy(zero_copy_only=False)
+    unique_installaties, inverse_indices = np.unique(installaties, return_inverse=True)
+    group_dict = {}
+    for idx, installatie in enumerate(unique_installaties):
+        group_mask = (inverse_indices == idx)
+        group_indices = np.flatnonzero(group_mask)
+        group = table.take(pa.array(group_indices))
+        point_cloud, pc_row_indices = create_point_cloud_with_indices(group)
+        if point_cloud.shape[0] > 0:
+            center = (float(point_cloud[:, 0].mean()), float(point_cloud[:, 1].mean()))
+            min_x, min_y = point_cloud.min(axis=0)
+            max_x, max_y = point_cloud.max(axis=0)
+            bbox = (float(min_x), float(min_y), float(max_x), float(max_y))
+        else:
+            center = None
+            bbox = None
+        group_dict[installatie] = {
+            'table': group,
+            'point cloud': point_cloud,
+            'point cloud row indices': pc_row_indices,
+            'center': center,
+            'bbox': bbox,
+            'done': False,
+            'color': None
+        }
+    return group_dict
+
+def count_color_assignments(aant_array, valid_row_set):
+    """Count total color assignments for records with valid coordinates."""
+    total = 0
+    for i, n in enumerate(aant_array):
+        if n is None or (isinstance(n, float) and np.isnan(n)):
+            continue
+        n_colors = int(n)
+        n_colors = min(n_colors, len(COLOR_COLUMN_NAMES))
+        if i in valid_row_set:
+            total += n_colors
+    return total
+
+def build_assignments(aant_array, row_to_pc_idx):
+    """Build assignment list: (row_idx, color_col_idx, point_idx) for valid records."""
+    assignments = []
+    for i, n in enumerate(aant_array):
+        if n is None or (isinstance(n, float) and np.isnan(n)):
+            continue
+        n_colors = int(n)
+        n_colors = min(n_colors, len(COLOR_COLUMN_NAMES))
+        if i in row_to_pc_idx:
+            pc_idx = row_to_pc_idx[i]
+            for j in range(n_colors):
+                assignments.append((i, j, pc_idx))
+    return assignments
+
+def split_into_170m_connected_subgroups(assignments, point_cloud, max_size=150):
+    """Split assignments into 170m-connected subgroups of max size."""
+    if not assignments:
+        return []
+    # Build adjacency matrix
+    assignment_points = np.array([point_cloud[pc_idx] for _, _, pc_idx in assignments])
+    dists = np.linalg.norm(assignment_points[:, None, :] - assignment_points[None, :, :], axis=2)
+    adjacency = dists <= 170
+    n_assign = len(assignments)
+    visited = np.zeros(n_assign, dtype=bool)
+    subgroups = []
+    for start in range(n_assign):
+        if visited[start]:
+            continue
+        queue = [start]
+        component = []
+        visited[start] = True
+        while queue and len(component) < max_size:
+            node = queue.pop(0)
+            component.append(node)
+            neighbors = np.where(adjacency[node] & ~visited)[0]
+            for neighbor in neighbors:
+                if len(component) >= max_size:
+                    break
+                visited[neighbor] = True
+                queue.append(neighbor)
+        subgroups.append(component)
+    return subgroups
+
+def assign_colors_to_subgroups(table, assignments, subgroups, point_cloud, group_dict, orig_key, used_colors):
+    """Assign a unique color to each subgroup and update group_dict."""
+    num_rows = table.num_rows
+    for idx, subgroup in enumerate(subgroups):
+        possible_colors = set(COLORS)
+        possible_colors.discard('Kleurloos')
+        forbidden_colors = set()
+        for other_key, other_grp in group_dict.items():
+            if other_grp['color'] is not None:
+                pc1 = other_grp['point cloud']
+                subgroup_pc_indices = [assignments[i][2] for i in subgroup]
+                pc2 = point_cloud[subgroup_pc_indices]
+                if pc1.shape[0] > 0 and pc2.shape[0] > 0:
+                    min1, max1 = pc1.min(axis=0), pc1.max(axis=0)
+                    min2, max2 = pc2.min(axis=0), pc2.max(axis=0)
+                    dx = max(0, max(min2[0] - max1[0], min1[0] - max2[0]))
+                    dy = max(0, max(min2[1] - max1[1], min1[1] - max2[1]))
+                    min_box_dist = np.hypot(dx, dy)
+                    if min_box_dist >= DISTANCE_BETWEEN_COLORED_GROUPS:
+                        continue
+                    diff = pc1[:, np.newaxis, :] - pc2[np.newaxis, :, :]
+                    distances_matrix = np.linalg.norm(diff, axis=2)
+                    if np.any(distances_matrix < DISTANCE_BETWEEN_COLORED_GROUPS):
+                        forbidden_colors.add(other_grp['color'])
+        possible_colors -= used_colors
+        possible_colors -= forbidden_colors
+        assigned_color = next(iter(possible_colors), None)
+        used_colors.add(assigned_color)
+        print(f"Processing subgroup {idx+1} with {len(subgroup)} assignments and color {assigned_color}")
+
+        # Only include rows that are actually assigned in this subgroup
+        row_indices_in_subgroup = sorted(set(assignments[i][0] for i in subgroup))
+        sub_table = table.take(pa.array(row_indices_in_subgroup))
+
+        # Assign color columns for only these rows
+        num_sub_rows = sub_table.num_rows
+        color_columns = {col: [None] * num_sub_rows for col in COLOR_COLUMN_NAMES}
+        # Map from row_idx in original table to index in sub_table
+        row_idx_to_sub_idx = {row_idx: i for i, row_idx in enumerate(row_indices_in_subgroup)}
+        for idx_in_subgroup in subgroup:
+            row_idx, col_idx, _ = assignments[idx_in_subgroup]
+            sub_idx = row_idx_to_sub_idx[row_idx]
+            color_columns[COLOR_COLUMN_NAMES[col_idx]][sub_idx] = assigned_color
+        for col in COLOR_COLUMN_NAMES:
+            arr = pa.array(color_columns[col])
+            if col in sub_table.schema.names:
+                sub_table = sub_table.set_column(sub_table.schema.get_field_index(col), col, arr)
+            else:
+                sub_table = sub_table.append_column(col, arr)
+
+        subgroup_pc_indices = [assignments[i][2] for i in subgroup]
+        pc2 = point_cloud[subgroup_pc_indices]
+        if pc2.shape[0] > 0:
+            center = (float(pc2[:, 0].mean()), float(pc2[:, 1].mean()))
+            min_x, min_y = pc2.min(axis=0)
+            max_x, max_y = pc2.max(axis=0)
+            bbox = (float(min_x), float(min_y), float(max_x), float(max_y))
+        else:
+            center = None
+            bbox = None
+        new_key = f"{orig_key}_subgroup_{idx+1}"
+        group_dict[new_key] = {
+            'table': sub_table,
+            'point cloud': pc2,
+            'point cloud row indices': np.array(subgroup_pc_indices),
+            'center': center,
+            'bbox': bbox,
+            'done': True,
+            'color': assigned_color
+        }
+
+
+def assign_colors_to_group(grp_dict, group_dict, assigned_points=None):
+    """
+    Assigns a color to a group if total aantal_verlichtingstoestellen < 140 and no nearby group within
+    DISTANCE_BETWEEN_COLORED_GROUPS meters uses that color.
+    If >= 140, splits into subgroups of max 150, each subgroup must be a 170m-connected component, and assigns each a unique color.
+    """
+    print(f"Assigning colors to group {grp_dict['table']['installatie'][0].as_py()}")
     table = grp_dict['table']
     num_rows = table.num_rows
     aant_col = 'eigenschappen - lgc:installatie#vplmast|eig|aantal verlichtingstoestellen'
     aant_array = table[aant_col].to_pylist()
     point_cloud = grp_dict['point cloud']
     pc_row_indices = grp_dict['point cloud row indices']
+    valid_row_set = set(int(idx) for idx in pc_row_indices)
+    total_to_assign = count_color_assignments(aant_array, valid_row_set)
 
-    # Step 1: Build a list of assignments (row_idx, assignment_idx)
-    # Only include rows that have valid coordinates (i.e., are in pc_row_indices)
-    valid_rows = set(int(idx) for idx in pc_row_indices)
-    assignments = []
-    for i, n in enumerate(aant_array):
-        if i not in valid_rows:
-            continue
-        n_colors = 0 if n is None or (isinstance(n, float) and np.isnan(n)) else int(n)
-        n_colors = min(n_colors, len(COLOR_COLUMN_NAMES))
-        for j in range(n_colors):
-            assignments.append((i, j))
-    assignments = np.array(assignments)  # shape (total_to_assign, 2)
+    # debug_valid_rows = [(i, n) for i, n in enumerate(aant_array) if i in valid_row_set]
+    # print(
+    #     f"DEBUG: Group {grp_dict['table']['installatie'][0].as_py()} has {total_to_assign} assignments (from {len(debug_valid_rows)} records with valid coordinates)")
+    # print(
+    #     f"DEBUG: n_colors per valid row: {[n if n is not None and not (isinstance(n, float) and np.isnan(n)) else 0 for _, n in debug_valid_rows]}")
+    # print(f"DEBUG: Total records in group: {len(aant_array)}; records with valid coordinates: {len(valid_row_set)}")
 
-    # Map table row indices to point_cloud indices
-    row_to_pc_idx = {int(row_idx): pc_idx for pc_idx, row_idx in enumerate(pc_row_indices)}
-    assignment_pc_indices = np.array([row_to_pc_idx[int(i)] for i in assignments[:, 0]])
-    coords = point_cloud[assignment_pc_indices]  # get coordinates for each assignment
+    if total_to_assign >= 140:
+        print(
+            f"Group {grp_dict['table']['installatie'][0].as_py()} has {total_to_assign} assignments, splitting into subgroups.")
+        row_to_pc_idx = {int(row_idx): pc_idx for pc_idx, row_idx in enumerate(pc_row_indices)}
+        assignments = build_assignments(aant_array, row_to_pc_idx)
+        print(f"Total assignments (with valid coordinates): {len(assignments)}")
+        subgroups = split_into_170m_connected_subgroups(assignments, point_cloud, max_size=150)
+        orig_key = grp_dict['table']['installatie'][0].as_py()
+        del group_dict[orig_key]
+        used_colors = set()
+        assign_colors_to_subgroups(table, assignments, subgroups, point_cloud, group_dict, orig_key, used_colors)
+        return
 
-    # Step 2: Cluster assignments into subgroups of max 150, each within 170m of at least one other
-    unassigned = set(range(len(assignments)))
-    subgroups = []
-    while unassigned:
-        current = unassigned.pop()
-        cluster = {current}
-        to_check = {current}
-        while to_check and len(cluster) < 150:
-            idx = to_check.pop()
-            if not unassigned:
-                break
-            dists = np.linalg.norm(coords[list(unassigned)] - coords[idx], axis=1)
-            close = [list(unassigned)[i] for i, d in enumerate(dists) if d <= 170]
-            for c in close:
-                if c not in cluster and len(cluster) < 150:
-                    cluster.add(c)
-                    to_check.add(c)
-            unassigned -= set(close)
-        subgroups.append(list(cluster))
-
-    # Step 3: For each subgroup, assign a unique color (excluding colors used by nearby groups within 2000m)
+    # Normal case: less than 140 assignments, assign a single color
     center = grp_dict['center']
-    group_dict = grp_dict.get('group_dict', {})  # pass group_dict in grp_dict for context
+    nearby_groups = {
+        key: value for key, value in group_dict.items()
+        if value['center'] is not None and not value['done'] and
+        np.linalg.norm(np.array(value['center']) - np.array(center)) < 10000 and
+        key != grp_dict['table']['installatie'][0].as_py()
+    }
     possible_colors = set(COLORS)
     possible_colors.discard('Kleurloos')
-    if group_dict:
-        for nearby_group in group_dict.values():
-            if 'point cloud' not in nearby_group or 'table' not in nearby_group:
-                continue
-            pc1 = nearby_group['point cloud']
-            pc2 = point_cloud
-            if pc1.shape[0] > 0 and pc2.shape[0] > 0:
-                min1, max1 = pc1.min(axis=0), pc1.max(axis=0)
-                min2, max2 = pc2.min(axis=0), pc2.max(axis=0)
-                dx = max(0, max(min2[0] - max1[0], min1[0] - max2[0]))
-                dy = max(0, max(min2[1] - max1[1], min1[1] - max2[1]))
-                min_box_dist = np.hypot(dx, dy)
-                if min_box_dist >= 2000:
-                    continue
-                diff = pc1[:, np.newaxis, :] - pc2[np.newaxis, :, :]
-                distances_matrix = np.linalg.norm(diff, axis=2)
-                if np.any(distances_matrix < 2000):
-                    color_val = nearby_group['table'][COLOR_COLUMN_NAMES[0]][0].as_py()
-                    if color_val is not None:
-                        possible_colors.discard(color_val)
-
-    used_colors = set()
-    # Track all assigned points and their colors for conflict checking
-    assigned_points = []  # list of (coord, color)
-    color_columns = {col: [None] * num_rows for col in COLOR_COLUMN_NAMES}
-    color_list = list(possible_colors)
-    for subgroup_idx, subgroup in enumerate(subgroups):
-        # Get coordinates for all points in this subgroup
-        subgroup_coords = coords[subgroup]
-        # Exclude colors used within 2000m of any point in this subgroup
+    pc2 = grp_dict['point cloud']
+    if assigned_points is not None:
         forbidden_colors = set()
-        for pt in subgroup_coords:
+        for pt2 in pc2:
             for assigned_pt, assigned_color in assigned_points:
-                if np.linalg.norm(pt - assigned_pt) < 2000:
+                if np.linalg.norm(pt2 - assigned_pt) < DISTANCE_BETWEEN_COLORED_GROUPS:
                     forbidden_colors.add(assigned_color)
-        available_colors = [c for c in color_list if c not in forbidden_colors]
-        if not available_colors:
-            raise RuntimeError("Not enough unique colors to assign to subgroups.")
-        color = available_colors[0]
-        # Assign color to each assignment in the subgroup
-        for idx in subgroup:
-            row_idx, col_idx = assignments[idx]
-            color_columns[COLOR_COLUMN_NAMES[col_idx]][row_idx] = color
-            assigned_points.append((coords[idx], color))
+        possible_colors -= forbidden_colors
 
-
-    # Step 4: Write back to table
+    assigned_color = next(iter(possible_colors), None)
+    color_columns = {col: [None] * num_rows for col in COLOR_COLUMN_NAMES}
+    for i in range(num_rows):
+        n = aant_array[i]
+        n_colors = 0 if n is None or (isinstance(n, float) and np.isnan(n)) else int(n)
+        n_colors = min(n_colors, len(COLOR_COLUMN_NAMES))
+        assigned = [assigned_color] * n_colors + [None] * (len(COLOR_COLUMN_NAMES) - n_colors)
+        for j, col in enumerate(COLOR_COLUMN_NAMES):
+            color_columns[col][i] = assigned[j]
     for col in COLOR_COLUMN_NAMES:
         arr = pa.array(color_columns[col])
         if col in table.schema.names:
@@ -281,123 +268,46 @@ def handle_large_color_assignment(grp_dict, total_to_assign):
             table = table.append_column(col, arr)
     grp_dict['table'] = table
     grp_dict['done'] = True
-    grp_dict['amount_assigned'] = int(total_to_assign)
-    grp_dict['color'] = None  # Not a single color, but multiple
-
-    print(f"Large color assignment: {len(subgroups)} subgroups, colors used: {used_colors}")
-
-def group_table_by_installatie_with_point_cloud(table: pa.Table):
-    """
-    Groups the table by 'installatie'. For each group, stores a dict with:
-      - key 'table': the grouped pa.Table
-      - key 'point cloud': the result of create_point_cloud(group)
-      - key 'point cloud row indices': the table row indices for each point in the point cloud
-      - key 'center': the centroid (mean x, mean y) of the point cloud, or None if empty
-    Returns: dict[installatie] = {'table': group_table, 'point cloud': np.ndarray, 'point cloud row indices': np.ndarray, 'center': (float, float) or None}
-    """
-    # Vectorized: avoid repeated filtering by using numpy for grouping
-    installaties = table['installatie'].to_numpy(zero_copy_only=False)
-    unique_installaties, inverse_indices = np.unique(installaties, return_inverse=True)
-    group_dict = {}
-    for idx, installatie in enumerate(unique_installaties):
-        group_mask = (inverse_indices == idx)
-        # Use pyarrow's take to get the group table efficiently
-        group_indices = np.flatnonzero(group_mask)
-        group = table.take(pa.array(group_indices))
-        point_cloud, pc_row_indices = create_point_cloud_with_indices(group)
-        if point_cloud.shape[0] > 0:
-            center = (float(point_cloud[:, 0].mean()), float(point_cloud[:, 1].mean()))
-        else:
-            center = None
-        group_dict[installatie] = {
-            'table': group,
-            'point cloud': point_cloud,
-            'point cloud row indices': pc_row_indices,
-            'center': center,
-            'done': False
-        }
-    return group_dict
-
+    grp_dict['color'] = assigned_color
+    print(f"Assigned color {assigned_color} to group {grp_dict['table']['installatie'][0].as_py()}")
+    if assigned_points is not None and assigned_color is not None:
+        for pt in pc2:
+            assigned_points.append((pt, assigned_color))
+    return
 
 def assign_colors_to_table(table: pa.Table) -> pa.Table:
-    # make a grouped dict of the table by 'installatie'
+    """
+    Main function to assign colors to a pyarrow table by installatie groups.
+    """
     group_dict = group_table_by_installatie_with_point_cloud(table)
-
-    # start with A2562
-    # filter table to get only installatie A2562
-    start_installatie = group_dict['A2562']
-    print(start_installatie['table'])
-
-    assign_colors_to_group_by_dict(start_installatie, group_dict=group_dict)
-
-    # find the nearest group that has not been done yet, use the distance between the centers of the point clouds
+    # Start with the group with the most records (or pick any, e.g., first)
+    installaties = list(group_dict.keys())
+    if not installaties:
+        return table
+    # You can change the starting group selection logic as needed
+    start_installatie = 'A5452'
+    current_group = group_dict[start_installatie]
+    assigned_points = []
+    assign_colors_to_group(current_group, group_dict, assigned_points=assigned_points)
+    # Process remaining groups by nearest center
     while True:
         # Find the next group that is not done and has the closest center to the current group
-        # search for centers within 10000 meters of the current group
-        current_group = None
-        current_center = start_installatie['center']
-        min_distance = 100000
+        current_center = current_group['center']
+        min_distance = float('inf')
+        next_group = None
         for installatie, grp_dict in group_dict.items():
             if grp_dict['done'] or grp_dict['center'] is None:
                 continue
-            # Calculate distance to the current center
             distance = np.linalg.norm(np.array(grp_dict['center']) - np.array(current_center))
             if distance < min_distance:
                 min_distance = distance
-                current_group = grp_dict
-
-        if current_group is None:
-            print("No more groups to process.")
+                next_group = grp_dict
+        if next_group is None:
             break
-        print(f"Next group to process: {current_group['table']['installatie'][0].as_py()} at distance {min_distance:.2f}m")
-        # Assign colors to the current group
-        assign_colors_to_group_by_dict(current_group, group_dict=group_dict)
-
-    table = update_main_table(group_dict, table)
-
-    return table
-
-
-def update_main_table(group_dict, table):
-    # reflect the changes in group_dict back to the table
-    updated_tables = []
-    for installatie, grp_dict in group_dict.items():
-        if not grp_dict['done']:
-            continue
-        # Collect the modified group tables
-        updated_tables.append(grp_dict['table'])
+        assign_colors_to_group(next_group, group_dict, assigned_points=assigned_points)
+        current_group = next_group
+    # Update the main table with all group assignments
+    updated_tables = [grp_dict['table'] for grp_dict in group_dict.values() if grp_dict['done']]
     if updated_tables:
         table = pa.concat_tables(updated_tables, promote=True)
     return table
-
-
-def group_table_by_installatie_with_point_cloud(table: pa.Table):
-    """
-    Groups the table by 'installatie'. For each group, stores a dict with:
-      - key 'table': the grouped pa.Table
-      - key 'point cloud': the result of create_point_cloud(group)
-      - key 'center': the centroid (mean x, mean y) of the point cloud, or None if empty
-    Returns: dict[installatie] = {'table': group_table, 'point cloud': np.ndarray, 'center': (float, float) or None}
-    """
-    # Vectorized: avoid repeated filtering by using numpy for grouping
-    installaties = table['installatie'].to_numpy(zero_copy_only=False)
-    unique_installaties, inverse_indices = np.unique(installaties, return_inverse=True)
-    group_dict = {}
-    for idx, installatie in enumerate(unique_installaties):
-        group_mask = (inverse_indices == idx)
-        # Use pyarrow's take to get the group table efficiently
-        group_indices = np.flatnonzero(group_mask)
-        group = table.take(pa.array(group_indices))
-        point_cloud, pc_row_indices = create_point_cloud_with_indices(group)
-        if point_cloud.shape[0] > 0:
-            center = (float(point_cloud[:, 0].mean()), float(point_cloud[:, 1].mean()))
-        else:
-            center = None
-        group_dict[installatie] = {
-            'table': group,
-            'point cloud': point_cloud,
-            'point cloud row indices': pc_row_indices,
-            'center': center,
-            'done': False
-        }
-    return group_dict

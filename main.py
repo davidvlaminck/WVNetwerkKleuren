@@ -29,17 +29,22 @@ def convert_csv_to_parquet():
         'eigenschappen - lgc:installatie#vplmast|eig|netwerkconfigWV2',
         'eigenschappen - lgc:installatie#vplmast|eig|netwerkconfigWV3',
         'eigenschappen - lgc:installatie#vplmast|eig|netwerkconfigWV4']
-
     filtered_table = filtered_table.select(columns_to_keep)
 
-    # for pyarrow table: add a column installatie that takes the first part of "naampad" up until the first "/"
+    # # only use the first X rows for testing purposes
+    # filtered_table = filtered_table.slice(0, 1000)
 
+    # for pyarrow table: add a column installatie that takes the first part of "naampad" up until the first "/"
     filtered_table = add_installatie(filtered_table)
 
     filtered_table = add_wkb(filtered_table)
 
     # assign colors to the table
+
+    start = time.time()
     filtered_table = assign_colors_to_table(filtered_table)
+    end = time.time()
+    print(f"Time taken: {end - start:.2f} seconds")
 
     # write to parquet file
     parquet_file = Path(__file__).parent / 'data' / 'filtered_data.parquet'
@@ -87,13 +92,12 @@ if __name__ == "__main__":
     table = pq.read_table(parquet_file)
 
     # Remove the wkb column before writing to output.csv
-    if 'wkb' in table.schema.names:
-        table = table.drop(['wkb'])
+    table_no_wkb = table.drop(['wkb'])
 
     # write table to output.csv
     output_csv = Path(__file__).parent / 'data' / 'output.csv'
     write_options = csv.WriteOptions(delimiter='\t')
-    csv.write_csv(table, output_csv, write_options=write_options)
+    csv.write_csv(table_no_wkb, output_csv, write_options=write_options)
 
 
     start = time.time()
@@ -101,10 +105,10 @@ if __name__ == "__main__":
     end = time.time()
     print(f"Score: {score} Time taken: {end - start:.2f} seconds")
 
-    df = ga.to_geopandas(table)
-    # print resulting DataFrame, with all data for the first 7 rows
-    df = df.head(7)
-    df = df.reset_index(drop=True)
-    print(df.to_string(index=False, max_colwidth=100))
+    # df = ga.to_geopandas(table)
+    # # print resulting DataFrame, with all data for the first 7 rows
+    # df = df.head(7)
+    # df = df.reset_index(drop=True)
+    # print(df.to_string(index=False, max_colwidth=100))
 
 
