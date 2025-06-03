@@ -6,43 +6,50 @@ from shapely import wkb
 from global_vars import COLOR_COLUMN_NAMES
 
 
+def create_point_cloud(group: pa.Table) -> np.ndarray:
+    points = [wkb.loads(point.as_py()) for point in group['wkb']]
+    return np.array([[pt.x, pt.y] for pt in points if pt is not None])
+
+
 def score_E_distance_within_colored_group(table: pa.Table) -> float:
-    def create_point_cloud(group):
-        points = [wkb.loads(point.as_py()) for point in group['wkb']]
-        # Create a numpy array of shape (n_points, 2) with x and y coordinates
-        point_cloud = np.array([[pt.x, pt.y] for pt in points if pt is not None])
-        return point_cloud
-
-    def max_distance_in_point_cloud(point_cloud: np.ndarray) -> float:
-        n_points = point_cloud.shape[0]
-        if n_points < 2:
-            return 0.0
-        idx1, idx2 = np.triu_indices(n_points, k=1)
-        dists = np.linalg.norm(point_cloud[idx1] - point_cloud[idx2], axis=1)
-        return np.max(dists) if dists.size > 0 else 0.0
-
+    """
+    +50 per group (installatie, color) if all points are within 170m of each other (or only one point).
+    Optimized for performance: avoids repeated filtering and uses numpy vectorization.
+    """
+    # Group by 'installatie' and color
     grouped_table = table.group_by(['installatie', COLOR_COLUMN_NAMES[0]]).aggregate([])
+
+    # Pre-extract all relevant columns as numpy arrays for fast filtering
+    installatie_arr = table['installatie'].to_numpy(zero_copy_only=False)
+    color_arr = table[COLOR_COLUMN_NAMES[0]].to_numpy(zero_copy_only=False)
+    wkb_arr = table['wkb'].to_numpy(zero_copy_only=False)
 
     score = 0
     for i in range(len(grouped_table)):
         installation = grouped_table['installatie'][i].as_py()
         color = grouped_table[COLOR_COLUMN_NAMES[0]][i].as_py()
 
-        # Get the rows for the current group
-        filter_condition = pc.and_(
-            pc.equal(table['installatie'], installation),
-            pc.equal(table[COLOR_COLUMN_NAMES[0]], color))
-
-        group = table.filter(filter_condition)
+        # Vectorized mask for group selection
+        mask = (installatie_arr == installation) & (color_arr == color)
+        group_wkb = wkb_arr[mask]
 
         # Create the point cloud for the group
-        point_cloud = create_point_cloud(group)
-        if len(point_cloud) == 1:
+        points = [wkb.loads(wkb_bytes) for wkb_bytes in group_wkb]
+        point_cloud = np.array([[pt.x, pt.y] for pt in points if pt is not None])
+
+        n_points = point_cloud.shape[0]
+        if n_points == 1:
             score += 50
             continue
 
-        if max_distance_in_point_cloud(point_cloud) < 170:
-            score += 50
+        if n_points > 1:
+            # Efficient pairwise distance calculation
+            diff = point_cloud[:, None, :] - point_cloud[None, :, :]
+            dists = np.linalg.norm(diff, axis=2)
+            # Only consider upper triangle (unique pairs)
+            max_dist = np.max(np.triu(dists, k=1))
+            if max_dist < 170:
+                score += 50
 
     return score
 
@@ -74,17 +81,10 @@ def score_C_max_150_armaturen_per_kleur_per_installatie(table: pa.Table) -> floa
 
 
 def score_D_distance_between_colored_group(table: pa.Table) -> float:
-    # Function to create a buffered polygon for each group of points
-    def create_point_cloud(group):
-        points = [wkb.loads(point.as_py()) for point in group['wkb']]
-        # Create a numpy array of shape (n_points, 2) with x and y coordinates
-        point_cloud = np.array([[pt.x, pt.y] for pt in points if pt is not None])
-        return point_cloud
-
-    # Group by "installation" and "color" and create the buffered polygons
+    # Group by "installation" and "color" and create the point clouds for each group
     grouped_table = table.group_by(['installatie', COLOR_COLUMN_NAMES[0]]).aggregate([])
 
-    # Iterate over the groups and create polygons per group
+    # Iterate over the groups and create point cloud per group
     point_clouds = []
     for i in range(len(grouped_table)):
         installation = grouped_table['installatie'][i].as_py()
@@ -109,7 +109,7 @@ def score_D_distance_between_colored_group(table: pa.Table) -> float:
         color_to_clouds[color].append((installation, point_cloud))
 
     score = 0
-    for color, clouds in color_to_clouds.items():
+    for clouds in color_to_clouds.values():
         n = len(clouds)
         # Precompute which clouds are non-empty
         non_empty = [i for i, (_, pc) in enumerate(clouds) if pc.size > 0]
@@ -131,7 +131,7 @@ def score_D_distance_between_colored_group(table: pa.Table) -> float:
                 points = 50
             elif min_dist_total <= 2000:
                 points = 100
-            elif min_dist_total > 2000:
+            else:
                 points = 150
             # print(f"point_cloud1: {installation}_{color}, Min Distance:"
             #       f" {min_dist_total}, Points: {points}")
@@ -140,22 +140,26 @@ def score_D_distance_between_colored_group(table: pa.Table) -> float:
 
 
 def score_A_color_for_each_armature(table: pa.Table) -> float:
-    # Fully vectorized PyArrow approach, avoiding pandas for speed and memory
-    # 1. Stack all color columns into a single (num_rows, num_color_cols) matrix
-    color_arrays = [table[col] for col in COLOR_COLUMN_NAMES]
-    # Ensure all arrays are of the same length and type
+    """
+    +0.01 * aantal verlichtingstoestellen per armatuur waarvoor alle kleur kolommen gevuld zijn volgens het
+    aantal verlichtingstoestellen.
+    """
     num_rows = len(table)
-    color_matrix = np.empty((num_rows, len(COLOR_COLUMN_NAMES)), dtype=object)
-    for i, arr in enumerate(color_arrays):
-        # Convert to numpy with None for nulls
-        color_matrix[:, i] = arr.to_numpy(zero_copy_only=False)
-    # 2. Count non-nulls per row using numpy
-    non_null_counts = np.sum(color_matrix != None, axis=1)
-    # 3. Get the 'aantal verlichtingstoestellen' column as numpy array
+    if num_rows == 0:
+        return 0.0
+
+    # Use pyarrow.compute.is_valid to get a boolean mask for each color column
+    valid_masks = [pc.is_valid(table[col]) for col in COLOR_COLUMN_NAMES]
+    # Stack into a 2D boolean numpy array: shape (num_rows, num_color_cols)
+    valid_matrix = np.column_stack([mask.to_numpy(zero_copy_only=False) for mask in valid_masks])
+    # Count non-nulls per row
+    non_null_counts = valid_matrix.sum(axis=1)
+
+    # Get the 'aantal verlichtingstoestellen' column as numpy array
     aantallen = table['eigenschappen - lgc:installatie#vplmast|eig|aantal verlichtingstoestellen'].to_numpy(zero_copy_only=False)
-    # 4. Calculate mask where all color columns are filled (non-nulls == aantal)
+    # Calculate mask where all color columns are filled (non-nulls == aantal)
     mask = non_null_counts == aantallen
-    # 5. Compute score: 0.01 * aantal where mask is True, else 0
+    # Compute score: 0.01 * aantal where mask is True, else 0
     scores = np.where(mask, 0.01 * aantallen, 0)
     return float(np.sum(scores))
 
