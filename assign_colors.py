@@ -1,13 +1,11 @@
-import random
-
 import numpy as np
 import pyarrow as pa
 from ordered_set import OrderedSet
-from pyarrow import compute as pc
-from shapely import wkb
+from shapely.geometry import Point
 
-from global_vars import COLORS, COLOR_COLUMN_NAMES, DISTANCE_BETWEEN_COLORED_GROUPS
-from score_functions import create_point_cloud, score_E_distance_within_colored_group
+from global_vars import COLORS, COLOR_COLUMN_NAMES, DISTANCE_BETWEEN_COLORED_GROUPS, START_INSTALLATION, \
+    MAX_ARMATURES_PER_COLOR, MAX_CONNECTION_DISTANCE
+from score_functions import score_E_distance_within_colored_group
 
 
 def create_point_cloud_with_indices(table):
@@ -93,18 +91,16 @@ def build_assignments(aant_array, row_to_pc_idx):
         n_colors = min(n_colors, len(COLOR_COLUMN_NAMES))
         if i in row_to_pc_idx:
             pc_idx = row_to_pc_idx[i]
-            for j in range(n_colors):
-                assignments.append((i, j, pc_idx))
+            assignments.extend((i, j, pc_idx) for j in range(n_colors))
     return assignments
 
 def split_into_170m_connected_subgroups(assignments, point_cloud, max_size=140):
     """
     Try to split assignments into 2..6 subgroups, up to 5 attempts per n_groups.
     For each attempt, use farthest point sampling (first attempt) or random seeds (other attempts).
-    Grow groups by adding closest unassigned point within 170m.
-    If all subgroups are 170m-connected (score_E_distance_within_colored_group > 0), return the split.
+    Grow groups by adding closest unassigned point within {MAX_CONNECTION_DISTANCE}m.
+    If all subgroups are {MAX_CONNECTION_DISTANCE}m-connected (score_E_distance_within_colored_group > 0), return the split.
     """
-    import pyarrow as pa
 
     if not assignments:
         return []
@@ -116,9 +112,7 @@ def split_into_170m_connected_subgroups(assignments, point_cloud, max_size=140):
         # subgroup: list of assignment indices
         # We need to create a pyarrow table with at least 'installatie', COLOR_COLUMN_NAMES[0], and 'wkb'
         # We'll use dummy values for 'installatie' and color, and real coordinates
-        from shapely.geometry import Point
-        from shapely import wkb as shapely_wkb
-        import pyarrow as pa
+
 
         # Get the point indices for this subgroup
         pc_indices = [assignments[i][2] for i in subgroup]
@@ -161,7 +155,7 @@ def split_into_170m_connected_subgroups(assignments, point_cloud, max_size=140):
             # Each seed forms the initial member of a group
             groups = [[seed] for seed in seeds]
             assigned = set(seeds)
-            # Grow each group by adding the closest unassigned point within 170m
+            # Grow each group by adding the closest unassigned point within {MAX_CONNECTION_DISTANCE}m
             for _ in range(max_size):
                 any_added = False
                 for group in groups:
@@ -173,7 +167,7 @@ def split_into_170m_connected_subgroups(assignments, point_cloud, max_size=140):
                     dists = np.linalg.norm(group_points[:, None, :] - assignment_points[None, :, :], axis=2)
                     dists[:, list(assigned)] = np.inf
                     min_dist = np.min(dists, axis=0)
-                    candidates = np.where((min_dist <= 170) & (~np.isinf(min_dist)))[0]
+                    candidates = np.where((min_dist <= MAX_CONNECTION_DISTANCE) & (~np.isinf(min_dist)))[0]
                     if len(candidates) == 0:
                         continue
                     next_idx = candidates[np.argmin(min_dist[candidates])]
@@ -193,7 +187,7 @@ def split_into_170m_connected_subgroups(assignments, point_cloud, max_size=140):
                         continue
                     group_points = assignment_points[group]
                     dists = np.linalg.norm(group_points - assignment_points[idx], axis=1)
-                    if np.any(dists <= 170):
+                    if np.any(dists <= MAX_CONNECTION_DISTANCE):
                         group.append(idx)
                         assigned.add(idx)
                         added = True
@@ -201,7 +195,7 @@ def split_into_170m_connected_subgroups(assignments, point_cloud, max_size=140):
                 if not added:
                     groups.append([idx])
                     assigned.add(idx)
-            # Check if all groups are 170m-connected
+            # Check if all groups are {MAX_CONNECTION_DISTANCE}m-connected
             all_good = True
             for group in groups:
                 if len(group) == 0:
@@ -243,7 +237,7 @@ def split_into_170m_connected_subgroups(assignments, point_cloud, max_size=140):
             dists = np.linalg.norm(group_points[:, None, :] - assignment_points[None, :, :], axis=2)
             dists[:, list(assigned)] = np.inf
             min_dist = np.min(dists, axis=0)
-            candidates = np.where((min_dist <= 170) & (~np.isinf(min_dist)))[0]
+            candidates = np.where((min_dist <= MAX_CONNECTION_DISTANCE) & (~np.isinf(min_dist)))[0]
             if len(candidates) == 0:
                 continue
             next_idx = candidates[np.argmin(min_dist[candidates])]
@@ -262,7 +256,7 @@ def split_into_170m_connected_subgroups(assignments, point_cloud, max_size=140):
                 continue
             group_points = assignment_points[group]
             dists = np.linalg.norm(group_points - assignment_points[idx], axis=1)
-            if np.any(dists <= 170):
+            if np.any(dists <= MAX_CONNECTION_DISTANCE):
                 group.append(idx)
                 assigned.add(idx)
                 added = True
@@ -273,13 +267,11 @@ def split_into_170m_connected_subgroups(assignments, point_cloud, max_size=140):
     return [group for group in groups if len(group) > 0]
 
 
-
 def assign_colors_to_subgroups(table, assignments, subgroups, point_cloud, group_dict, orig_key, used_colors):
     """Assign a unique color to each subgroup and update group_dict."""
     num_rows = table.num_rows
     for idx, subgroup in enumerate(subgroups):
         possible_colors = OrderedSet(COLORS)
-        possible_colors.discard('Kleurloos')
         forbidden_colors = set()
         for other_key, other_grp in group_dict.items():
             if other_grp['color'] is not None:
@@ -305,7 +297,7 @@ def assign_colors_to_subgroups(table, assignments, subgroups, point_cloud, group
         print(f"Processing subgroup {idx+1} with {len(subgroup)} assignments and color {assigned_color}")
 
         # Only include rows that are actually assigned in this subgroup
-        row_indices_in_subgroup = sorted(set(assignments[i][0] for i in subgroup))
+        row_indices_in_subgroup = sorted({assignments[i][0] for i in subgroup})
         sub_table = table.take(pa.array(row_indices_in_subgroup))
 
         # Assign color columns for only these rows
@@ -348,9 +340,11 @@ def assign_colors_to_subgroups(table, assignments, subgroups, point_cloud, group
 
 def assign_colors_to_group(grp_dict, group_dict, assigned_points=None):
     """
-    Assigns a color to a group if total aantal_verlichtingstoestellen < 140 and no nearby group within
-    DISTANCE_BETWEEN_COLORED_GROUPS meters uses that color.
-    If >= 140, splits into subgroups of max 150, each subgroup must be a 170m-connected component, and assigns each a unique color.
+    Assigns a color to a group if total aantal_verlichtingstoestellen < {MAX_ARMATURES_PER_COLOR}-10 and no nearby
+    group within DISTANCE_BETWEEN_COLORED_GROUPS meters uses that color.
+    If >= {MAX_ARMATURES_PER_COLOR}-10, splits into subgroups of max {MAX_ARMATURES_PER_COLOR}, each subgroup must be a {
+    MAX_CONNECTION_DISTANCE}m-connected component, and assigns each a
+    unique color.
     """
     print(f"Assigning colors to group {grp_dict['table']['installatie'][0].as_py()}")
     table = grp_dict['table']
@@ -362,25 +356,29 @@ def assign_colors_to_group(grp_dict, group_dict, assigned_points=None):
     valid_row_set = set(int(idx) for idx in pc_row_indices)
     total_to_assign = count_color_assignments(aant_array, valid_row_set)
 
-    # Normal case: less than 140 assignments, assign a single color
-    if total_to_assign < 140:
+    # Normal case: less than {MAX_ARMATURES_PER_COLOR} - 10 assignments, assign a single color
+    if total_to_assign < MAX_ARMATURES_PER_COLOR-10:
         center = grp_dict['center']
-        nearby_groups = {
-            key: value for key, value in group_dict.items()
-            if value['center'] is not None and not value['done'] and
-            np.linalg.norm(np.array(value['center']) - np.array(center)) < 10000 and
-            key != grp_dict['table']['installatie'][0].as_py()
-        }
         possible_colors = OrderedSet(COLORS)
-        possible_colors.discard('Kleurloos')
         pc2 = grp_dict['point cloud']
-        if assigned_points is not None:
-            forbidden_colors = set()
-            for pt2 in pc2:
-                for assigned_pt, assigned_color in assigned_points:
-                    if np.linalg.norm(pt2 - assigned_pt) < DISTANCE_BETWEEN_COLORED_GROUPS:
-                        forbidden_colors.add(assigned_color)
-            possible_colors -= forbidden_colors
+        forbidden_colors = set()
+        # Unify forbidden color logic: check all colored groups in group_dict
+        for other_key, other_grp in group_dict.items():
+            if other_grp['color'] is not None and other_key != grp_dict['table']['installatie'][0].as_py():
+                pc1 = other_grp['point cloud']
+                if pc1.shape[0] > 0 and pc2.shape[0] > 0:
+                    min1, max1 = pc1.min(axis=0), pc1.max(axis=0)
+                    min2, max2 = pc2.min(axis=0), pc2.max(axis=0)
+                    dx = max(0, max(min2[0] - max1[0], min1[0] - max2[0]))
+                    dy = max(0, max(min2[1] - max1[1], min1[1] - max2[1]))
+                    min_box_dist = np.hypot(dx, dy)
+                    if min_box_dist >= DISTANCE_BETWEEN_COLORED_GROUPS:
+                        continue
+                    diff = pc1[:, np.newaxis, :] - pc2[np.newaxis, :, :]
+                    distances_matrix = np.linalg.norm(diff, axis=2)
+                    if np.any(distances_matrix < DISTANCE_BETWEEN_COLORED_GROUPS):
+                        forbidden_colors.add(other_grp['color'])
+        possible_colors -= forbidden_colors
 
         assigned_color = next(iter(possible_colors), None)
         color_columns = {col: [None] * num_rows for col in COLOR_COLUMN_NAMES}
@@ -408,14 +406,26 @@ def assign_colors_to_group(grp_dict, group_dict, assigned_points=None):
         score_rule_E = score_E_distance_within_colored_group(table)
         if score_rule_E > 0:
             return
-        # if not then we need to split into subgroups
+        # Revert assigned colors if score is 0
+        for col in COLOR_COLUMN_NAMES:
+            if col in table.schema.names:
+                # Set all values to None for this group
+                table = table.set_column(
+                    table.schema.get_field_index(col),
+                    col,
+                    pa.array([None] * num_rows)
+                )
+        grp_dict['table'] = table
+        grp_dict['done'] = False
+        grp_dict['color'] = None
+            # if not then we need to split into subgroups
 
     print(f"Group {grp_dict['table']['installatie'][0].as_py()} has {total_to_assign} assignments, "
           "splitting into subgroups.")
     row_to_pc_idx = {int(row_idx): pc_idx for pc_idx, row_idx in enumerate(pc_row_indices)}
     assignments = build_assignments(aant_array, row_to_pc_idx)
     print(f"Total assignments (with valid coordinates): {len(assignments)}")
-    subgroups = split_into_170m_connected_subgroups(assignments, point_cloud, max_size=150)
+    subgroups = split_into_170m_connected_subgroups(assignments, point_cloud, max_size=MAX_ARMATURES_PER_COLOR)
     orig_key = grp_dict['table']['installatie'][0].as_py()
     del group_dict[orig_key]
     used_colors = set()
@@ -432,8 +442,8 @@ def assign_colors_to_table(table: pa.Table) -> pa.Table:
     if not installaties:
         return table
     # You can change the starting group selection logic as needed
-    start_installatie = 'A2152'
-    current_group = group_dict[start_installatie]
+
+    current_group = group_dict[START_INSTALLATION]
     assigned_points = []
     assign_colors_to_group(current_group, group_dict, assigned_points=assigned_points)
     # Process remaining groups by nearest center

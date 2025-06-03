@@ -5,5 +5,5 @@
 - E) + 50 per kleurgroep per installatie als elke armatuur een andere armatuur vindt binnen 170 meter die aan een andere lichtmast hangt
 - F) + 50 per installatie die minder dan 150 armaturen bevat als die allemaal dezelfde kleurgroep hebben
 G) + 10 per kleurgroep als deze binnen een installatie geen wegnummers delen
-- H) + 2 000 als nergens de kleur “Kleurloos” wordt gebruikt
-- I) + 1 000 voor elke extra kleur die niet gebruikt is over alle armaturen heen
+- H) + 20 000 als nergens de kleur “Kleurloos” wordt gebruikt
+- I) + 10 000 voor elke extra kleur die niet gebruikt is over alle armaturen heen

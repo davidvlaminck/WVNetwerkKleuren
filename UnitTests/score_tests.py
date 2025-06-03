@@ -89,7 +89,7 @@ def test_score_H_I_total_amount_of_colors():
         COLOR_COLUMN_NAMES[2]: ['Blue', 'Red'],
         COLOR_COLUMN_NAMES[3]: ['Green', None],
     }
-    assert score_H_I_total_amount_of_colors(pa.table(data2)) == 2000
+    assert score_H_I_total_amount_of_colors(pa.table(data2)) == 20000
 
     data3 = {
         COLOR_COLUMN_NAMES[0]: ['Kleurloos', None],
@@ -97,7 +97,7 @@ def test_score_H_I_total_amount_of_colors():
         COLOR_COLUMN_NAMES[2]: [None, None],
         COLOR_COLUMN_NAMES[3]: [None, None],
     }
-    assert score_H_I_total_amount_of_colors(pa.table(data3)) == 7 * 1000
+    assert score_H_I_total_amount_of_colors(pa.table(data3)) == 7 * 10000
 
     data4 = {
         COLOR_COLUMN_NAMES[0]: ['Red', None],
@@ -105,7 +105,7 @@ def test_score_H_I_total_amount_of_colors():
         COLOR_COLUMN_NAMES[2]: ['Red', None],
         COLOR_COLUMN_NAMES[3]: [None, None],
     }
-    assert score_H_I_total_amount_of_colors(pa.table(data4)) == 2000 + 6 * 1000
+    assert score_H_I_total_amount_of_colors(pa.table(data4)) == 20000 + 6 * 10000
 
 
 def test_score_F_uniform_color_per_installatie():

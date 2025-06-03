@@ -18,10 +18,6 @@ def convert_csv_to_parquet():
     # Read the Excel file into a PyArrow Table
     table = csv.read_csv(excel_file, parse_options=csv.ParseOptions(delimiter='\t', newlines_in_values=True))
 
-    # Filter the table
-    filter_mask = pc.starts_with(table["naampad"], 'A')
-    filtered_table = table.filter(filter_mask)
-
     columns_to_keep = [
         'id','naampad','type','actief','toestand','locatie|punt|x|lambert72','locatie|punt|y|lambert72',
         'eigenschappen - lgc:installatie#vplmast|eig|aantal verlichtingstoestellen',
@@ -29,7 +25,7 @@ def convert_csv_to_parquet():
         'eigenschappen - lgc:installatie#vplmast|eig|netwerkconfigWV2',
         'eigenschappen - lgc:installatie#vplmast|eig|netwerkconfigWV3',
         'eigenschappen - lgc:installatie#vplmast|eig|netwerkconfigWV4']
-    filtered_table = filtered_table.select(columns_to_keep)
+    filtered_table = table.select(columns_to_keep)
 
     # # only use the first X rows for testing purposes
     # filtered_table = filtered_table.slice(0, 1000)

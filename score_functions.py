@@ -3,7 +3,7 @@ import pyarrow as pa
 from pyarrow import compute as pc
 from shapely import wkb
 
-from global_vars import COLOR_COLUMN_NAMES
+from global_vars import COLOR_COLUMN_NAMES, MAX_CONNECTION_DISTANCE, MAX_ARMATURES_PER_COLOR
 
 
 def create_point_cloud(group: pa.Table) -> np.ndarray:
@@ -13,7 +13,7 @@ def create_point_cloud(group: pa.Table) -> np.ndarray:
 
 def score_E_distance_within_colored_group(table: pa.Table) -> float:
     """
-    +50 per group (installatie, color) if all points are 170m-connected (i.e., for every pair, there is a path of steps ≤170m).
+    +50 per group (installatie, color) if all points are {MAX_CONNECTION_DISTANCE}m-connected (i.e., for every pair, there is a path of steps ≤170m).
     """
     from scipy.sparse.csgraph import connected_components
     from scipy.sparse import csr_matrix
@@ -31,6 +31,9 @@ def score_E_distance_within_colored_group(table: pa.Table) -> float:
         installation = grouped_table['installatie'][i].as_py()
         color = grouped_table[COLOR_COLUMN_NAMES[0]][i].as_py()
 
+        if color is None:
+            continue
+
         # Vectorized mask for group selection
         mask = (installatie_arr == installation) & (color_arr == color)
         group_wkb = wkb_arr[mask]
@@ -45,10 +48,10 @@ def score_E_distance_within_colored_group(table: pa.Table) -> float:
             continue
 
         if n_points > 1:
-            # Build adjacency matrix for 170m connectivity
+            # Build adjacency matrix for {MAX_CONNECTION_DISTANCE}m connectivity
             diff = point_cloud[:, None, :] - point_cloud[None, :, :]
             dists = np.linalg.norm(diff, axis=2)
-            adjacency = (dists <= 170)
+            adjacency = (dists <= MAX_CONNECTION_DISTANCE)
             # Remove self-loops
             np.fill_diagonal(adjacency, False)
             # Fast BFS to check connectivity
@@ -65,14 +68,14 @@ def score_E_distance_within_colored_group(table: pa.Table) -> float:
             if visited.all():
                 score += 50
             else:
-                print(f"Group ({installation}, {color}) is not 170m-connected, no points awarded.")
+                print(f"Group ({installation}, {color}) is not {MAX_CONNECTION_DISTANCE}m-connected, no points awarded.")
 
     return score
 
 
 def score_C_max_150_armaturen_per_kleur_per_installatie(table: pa.Table) -> float:
     """
-    +25 per installatie waarvoor het aantal armaturen per kleur niet boven de 150 gaat.
+    +25 per installatie waarvoor het aantal armaturen per kleur niet boven de {MAX_ARMATURES_PER_COLOR} gaat.
     """
     # Group by 'installatie' and color (using the first color column)
     grouped = table.group_by(['installatie', COLOR_COLUMN_NAMES[0]]).aggregate([
@@ -82,7 +85,7 @@ def score_C_max_150_armaturen_per_kleur_per_installatie(table: pa.Table) -> floa
     installaties = grouped['installatie'].to_numpy(zero_copy_only=False)
     counts = grouped["eigenschappen - lgc:installatie#vplmast|eig|aantal verlichtingstoestellen_sum"].to_numpy(zero_copy_only=False)
 
-    # Get unique installaties and for each, check if all counts for that installatie are <= 150
+    # Get unique installaties and for each, check if all counts for that installatie are <= {MAX_ARMATURES_PER_COLOR}
     # Use pyarrow.compute to build a mask for each installatie
     unique_installaties = pa.array(np.unique(installaties))
     score = 0
@@ -90,8 +93,8 @@ def score_C_max_150_armaturen_per_kleur_per_installatie(table: pa.Table) -> floa
         mask = pc.equal(grouped['installatie'], installatie)
         # Use pyarrow.compute.filter to get counts for this installatie
         counts_for_installatie = pc.filter(grouped["eigenschappen - lgc:installatie#vplmast|eig|aantal verlichtingstoestellen_sum"], mask)
-        # If all counts <= 150, add 25
-        if pc.all(pc.less_equal(counts_for_installatie, pa.scalar(150))).as_py():
+        # If all counts <= {MAX_ARMATURES_PER_COLOR}, add 25
+        if pc.all(pc.less_equal(counts_for_installatie, pa.scalar(MAX_ARMATURES_PER_COLOR))).as_py():
             score += 25
     return score
 
@@ -200,12 +203,12 @@ def score_H_I_total_amount_of_colors(table: pa.Table) -> float:
 
     # If "Kleurloos" is not used, add 2000 points
     if "Kleurloos" not in used_colors:
-        score += 2000
+        score += 20000
 
     # For every other color NOT used, add 1000 points
     for color in ['Cyan', 'Yellow', 'Magenta', 'Black', 'Blue', 'Red', 'Green', 'Kleurloos']:
         if color not in used_colors and color != "Kleurloos":
-            score += 1000
+            score += 10000
 
     return score
 
