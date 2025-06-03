@@ -55,21 +55,23 @@ def test_score_D_distance_between_colored_group():
 
 def test_score_E_distance_within_colored_group():
     data = {
-        COLOR_COLUMN_NAMES[0]: ['Red', 'Blue', 'Blue', 'Red', 'Red', 'Red'],
-        'installatie': ['A', 'A', 'A', 'B', 'B', 'B'],
+        COLOR_COLUMN_NAMES[0]: ['Red', 'Blue', 'Blue', 'Red', 'Red', 'Red', 'Yellow', 'Yellow'],
+        'installatie': ['A', 'A', 'A', 'B', 'B', 'B', 'C', 'C'],
         'wkb': [
             Point(0, 0).wkb,
             Point(1000, 1).wkb,
             Point(1100, 2).wkb,
             Point(2000, 3).wkb,
             Point(2100, 4).wkb,
-            Point(2300, 5).wkb
+            Point(2200, 5).wkb,
+            Point(3100, 6).wkb,
+            Point(3300, 7).wkb,
         ]
     }
 
     # Create a PyArrow table
     table = pa.table(data)
-    assert score_E_distance_within_colored_group(table) == 50 + 50 + 0
+    assert score_E_distance_within_colored_group(table) == 50 + 50 + 50 + 0
 
 
 def test_score_H_I_total_amount_of_colors():

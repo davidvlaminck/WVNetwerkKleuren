@@ -13,9 +13,11 @@ def create_point_cloud(group: pa.Table) -> np.ndarray:
 
 def score_E_distance_within_colored_group(table: pa.Table) -> float:
     """
-    +50 per group (installatie, color) if all points are within 170m of each other (or only one point).
-    Optimized for performance: avoids repeated filtering and uses numpy vectorization.
+    +50 per group (installatie, color) if all points are 170m-connected (i.e., for every pair, there is a path of steps ≤170m).
     """
+    from scipy.sparse.csgraph import connected_components
+    from scipy.sparse import csr_matrix
+
     # Group by 'installatie' and color
     grouped_table = table.group_by(['installatie', COLOR_COLUMN_NAMES[0]]).aggregate([])
 
@@ -43,13 +45,27 @@ def score_E_distance_within_colored_group(table: pa.Table) -> float:
             continue
 
         if n_points > 1:
-            # Efficient pairwise distance calculation
+            # Build adjacency matrix for 170m connectivity
             diff = point_cloud[:, None, :] - point_cloud[None, :, :]
             dists = np.linalg.norm(diff, axis=2)
-            # Only consider upper triangle (unique pairs)
-            max_dist = np.max(np.triu(dists, k=1))
-            if max_dist < 170:
+            adjacency = (dists <= 170)
+            # Remove self-loops
+            np.fill_diagonal(adjacency, False)
+            # Fast BFS to check connectivity
+            visited = np.zeros(n_points, dtype=bool)
+            queue = [0]
+            visited[0] = True
+            while queue:
+                node = queue.pop()
+                neighbors = np.where(adjacency[node])[0]
+                for neighbor in neighbors:
+                    if not visited[neighbor]:
+                        visited[neighbor] = True
+                        queue.append(neighbor)
+            if visited.all():
                 score += 50
+            else:
+                print(f"Group ({installation}, {color}) is not 170m-connected, no points awarded.")
 
     return score
 
@@ -126,6 +142,7 @@ def score_D_distance_between_colored_group(table: pa.Table) -> float:
                         min_dist_total = min_dist
 
             if min_dist_total < 1000:
+                print(f"point_cloud1: {installation}_{color}, Min Distance: {min_dist_total}, Points: 0")
                 points = 0
             elif min_dist_total <= 1500:
                 points = 50
