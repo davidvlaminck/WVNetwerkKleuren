@@ -1,4 +1,3 @@
-import random
 import struct
 import time
 from pathlib import Path
@@ -9,7 +8,7 @@ import pyarrow.compute as pc
 import pyarrow.csv as csv
 import pyarrow.parquet as pq
 
-from global_vars import COLORS, COLOR_COLUMN_NAMES
+from assign_colors import assign_colors_to_table
 from score_functions import get_score
 
 
@@ -80,25 +79,8 @@ def add_wkb(filtered_table: pa.Table) -> pa.Table:
     return filtered_table
 
 
-def assign_colors_to_table(filtered_table: pa.Table) -> pa.Table:
-    def get_random_color() -> str:
-        return random.choice(COLORS)
-
-    def assign_colors(row):
-        aantal_verlichtingstoestellen = row['eigenschappen - lgc:installatie#vplmast|eig|aantal verlichtingstoestellen']
-        for i in range(min(int(aantal_verlichtingstoestellen), 4)):
-            row[COLOR_COLUMN_NAMES[i]] = get_random_color()
-        return row
-
-    # Apply the assign_colors function to each row in the table
-    filtered_df = filtered_table.to_pandas().apply(assign_colors, axis=1)
-    # Convert the modified DataFrame back to a PyArrow Table
-    filtered_table = pa.Table.from_pandas(df=filtered_df)
-    return filtered_table
-
-
 if __name__ == "__main__":
-    # convert_csv_to_parquet()
+    convert_csv_to_parquet()
 
     # Read the parquet file
     parquet_file = Path(__file__).parent / 'data' / 'filtered_data.parquet'
