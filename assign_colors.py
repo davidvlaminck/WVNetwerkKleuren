@@ -53,7 +53,6 @@ def group_table_by_installatie_with_point_cloud(table: pa.Table):
     """
     # Vectorized: avoid repeated filtering by using numpy for grouping
     installaties = table['installatie'].to_numpy(zero_copy_only=False)
-    wkb_arr = table['wkb'].to_numpy(zero_copy_only=False)
     unique_installaties, inverse_indices = np.unique(installaties, return_inverse=True)
     group_dict = {}
     for idx, installatie in enumerate(unique_installaties):
@@ -69,6 +68,7 @@ def group_table_by_installatie_with_point_cloud(table: pa.Table):
         group_dict[installatie] = {
             'table': group,
             'point cloud': point_cloud,
-            'center': center
+            'center': center,
+            'done': False
         }
     return group_dict
