@@ -95,33 +95,89 @@ def build_assignments(aant_array, row_to_pc_idx):
                 assignments.append((i, j, pc_idx))
     return assignments
 
-def split_into_170m_connected_subgroups(assignments, point_cloud, max_size=150):
-    """Split assignments into 170m-connected subgroups of max size."""
+def split_into_170m_connected_subgroups(assignments, point_cloud, min_size=60, max_size=140):
+    """
+    Split assignments into n_groups, each starting from a seed point as far apart as possible,
+    then grow each group by adding the closest unassigned point within 170m.
+    Any remaining unassigned points are added to a group if possible (without exceeding max_size and 170m rule),
+    or put in a new group.
+    """
     if not assignments:
         return []
-    # Build adjacency matrix
-    assignment_points = np.array([point_cloud[pc_idx] for _, _, pc_idx in assignments])
-    dists = np.linalg.norm(assignment_points[:, None, :] - assignment_points[None, :, :], axis=2)
-    adjacency = dists <= 170
     n_assign = len(assignments)
-    visited = np.zeros(n_assign, dtype=bool)
-    subgroups = []
-    for start in range(n_assign):
-        if visited[start]:
-            continue
-        queue = [start]
-        component = []
-        visited[start] = True
-        while queue and len(component) < max_size:
-            node = queue.pop(0)
-            component.append(node)
-            neighbors = np.where(adjacency[node] & ~visited)[0]
-            for neighbor in neighbors:
-                if len(component) >= max_size:
-                    break
-                visited[neighbor] = True
-                queue.append(neighbor)
-        subgroups.append(component)
+    n_groups = int(np.ceil(n_assign / max_size))
+    assignment_points = np.array([point_cloud[pc_idx] for _, _, pc_idx in assignments])
+
+    # 1. Find n_groups seed points as far apart as possible (farthest point sampling)
+    seeds = []
+    used = set()
+    # Start with a random point
+    seeds.append(0)
+    used.add(0)
+    for _ in range(1, n_groups):
+        dists_to_seeds = np.min(
+            np.linalg.norm(assignment_points[np.newaxis, :, :] - assignment_points[seeds, :][:, np.newaxis, :], axis=2),
+            axis=0
+        )
+        for idx in np.argsort(-dists_to_seeds):
+            if idx not in used:
+                seeds.append(idx)
+                used.add(idx)
+                break
+
+    # 2. Each seed forms the initial member of a group
+    groups = [[seed] for seed in seeds]
+    assigned = set(seeds)
+    # 3. Grow each group by adding the closest unassigned point within 170m
+    for _ in range(max_size):
+        any_added = False
+        for group in groups:
+            if len(assigned) >= n_assign:
+                break
+            if len(group) >= max_size:
+                continue
+            # Find all unassigned points within 170m of any point in the group
+            group_points = assignment_points[group]
+            dists = np.linalg.norm(group_points[:, None, :] - assignment_points[None, :, :], axis=2)
+            # Mask out already assigned
+            dists[:, list(assigned)] = np.inf
+            # Find the closest unassigned point within 170m
+            min_dist = np.min(dists, axis=0)
+            candidates = np.where((min_dist <= 170) & (~np.isinf(min_dist)))[0]
+            if len(candidates) == 0:
+                continue  # No more reachable points for this group
+            # Pick the closest candidate
+            next_idx = candidates[np.argmin(min_dist[candidates])]
+            group.append(next_idx)
+            assigned.add(next_idx)
+            any_added = True
+            if len(assigned) == n_assign:
+                break
+        if not any_added:
+            break
+
+    # 4. Handle any remaining unassigned points
+    unassigned = set(range(n_assign)) - assigned
+    for idx in list(unassigned):
+        # Try to add to an existing group (not exceeding max_size and within 170m)
+        added = False
+        for group in groups:
+            if len(group) >= max_size:
+                continue
+            group_points = assignment_points[group]
+            dists = np.linalg.norm(group_points - assignment_points[idx], axis=1)
+            if np.any(dists <= 170):
+                group.append(idx)
+                assigned.add(idx)
+                added = True
+                break
+        if not added:
+            # Create a new group for this point
+            groups.append([idx])
+            assigned.add(idx)
+
+    # Convert to subgroups (list of assignment indices)
+    subgroups = [group for group in groups if len(group) > 0]
     return subgroups
 
 def assign_colors_to_subgroups(table, assignments, subgroups, point_cloud, group_dict, orig_key, used_colors):
