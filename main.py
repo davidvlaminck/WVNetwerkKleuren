@@ -86,6 +86,16 @@ if __name__ == "__main__":
     parquet_file = Path(__file__).parent / 'data' / 'filtered_data.parquet'
     table = pq.read_table(parquet_file)
 
+    # Remove the wkb column before writing to output.csv
+    if 'wkb' in table.schema.names:
+        table = table.drop(['wkb'])
+
+    # write table to output.csv
+    output_csv = Path(__file__).parent / 'data' / 'output.csv'
+    write_options = csv.WriteOptions(delimiter='\t')
+    csv.write_csv(table, output_csv, write_options=write_options)
+
+
     start = time.time()
     score = get_score(table)
     end = time.time()
