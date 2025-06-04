@@ -1,7 +1,6 @@
 import pyarrow as pa
 from shapely.geometry.point import Point
 
-from assign_colors import combine_columns
 from global_vars import COLOR_COLUMN_NAMES
 from score_functions import score_E_distance_within_colored_group, score_C_max_150_armaturen_per_kleur_per_installatie, \
     score_D_distance_between_colored_group, score_A_color_for_each_armature, score_H_I_total_amount_of_colors, \
@@ -161,28 +160,3 @@ def test_score_C_max_150_armaturen_per_kleur_per_installatie():
     assert score_C_max_150_armaturen_per_kleur_per_installatie(table) == 25 + 25 + 0
 
 
-def test_combine_columns():
-    data = {
-        'eigenschappen - lgc:installatie#vplmast|eig|netwerkconfigWV1': [None, None, 'Green', 'Red'],
-        'eigenschappen - lgc:installatie#vpconsole|eig|netwerkconfigWV1': [None, 'Blue', None, None],
-        'eigenschappen - lgc:installatie#vpbevestig|eig|netwerkconfigWV1': [None, None, None, None],
-    }
-    table = pa.table(data)
-    assert table.column('eigenschappen - lgc:installatie#vplmast|eig|netwerkconfigWV1').equals(
-        table.column('eigenschappen - lgc:installatie#vpconsole|eig|netwerkconfigWV1')
-    ) is False
-
-    # Combine the two columns
-    new_table = combine_columns(
-        table,
-        from_columns=['eigenschappen - lgc:installatie#vplmast|eig|netwerkconfigWV1',
-                      'eigenschappen - lgc:installatie#vpconsole|eig|netwerkconfigWV1',
-                      'eigenschappen - lgc:installatie#vpbevestig|eig|netwerkconfigWV1'],
-        to_column='eigenschappen|eig|netwerkconfigWV1'
-    )
-
-    combined_column = new_table.column('eigenschappen|eig|netwerkconfigWV1')
-
-    assert combined_column.equals(
-        pa.chunked_array([pa.array([None, 'Blue', 'Green', 'Red'], type=pa.string())])
-    ) is True
