@@ -305,10 +305,17 @@ def assign_colors_to_subgroups(table, assignments, subgroups, point_cloud, group
         color_columns = {col: [None] * num_sub_rows for col in COLOR_COLUMN_NAMES}
         # Map from row_idx in original table to index in sub_table
         row_idx_to_sub_idx = {row_idx: i for i, row_idx in enumerate(row_indices_in_subgroup)}
-        for idx_in_subgroup in subgroup:
-            row_idx, col_idx, _ = assignments[idx_in_subgroup]
+        # Find all row indices in this subgroup
+        rows_in_this_subgroup = {assignments[idx][0] for idx in subgroup}
+        aant_col = 'eigenschappen|eig|aantal verlichtingstoestellen'
+        aant_array = table[aant_col].to_pylist()
+        for row_idx in rows_in_this_subgroup:
             sub_idx = row_idx_to_sub_idx[row_idx]
-            color_columns[COLOR_COLUMN_NAMES[col_idx]][sub_idx] = assigned_color
+            n = aant_array[row_idx]
+            n_colors = 0 if n is None or (isinstance(n, float) and np.isnan(n)) else int(n)
+            n_colors = min(n_colors, len(COLOR_COLUMN_NAMES))
+            for j, col in enumerate(COLOR_COLUMN_NAMES):
+                color_columns[col][sub_idx] = assigned_color if j < n_colors else None
         for col in COLOR_COLUMN_NAMES:
             arr = pa.array(color_columns[col])
             if col in sub_table.schema.names:
