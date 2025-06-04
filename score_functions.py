@@ -79,11 +79,11 @@ def score_C_max_150_armaturen_per_kleur_per_installatie(table: pa.Table) -> floa
     """
     # Group by 'installatie' and color (using the first color column)
     grouped = table.group_by(['installatie', COLOR_COLUMN_NAMES[0]]).aggregate([
-        ("eigenschappen - lgc:installatie#vplmast|eig|aantal verlichtingstoestellen", "sum")
+        ("eigenschappen|eig|aantal verlichtingstoestellen", "sum")
     ])
     # Use pyarrow only: convert to numpy arrays for vectorized processing
     installaties = grouped['installatie'].to_numpy(zero_copy_only=False)
-    counts = grouped["eigenschappen - lgc:installatie#vplmast|eig|aantal verlichtingstoestellen_sum"].to_numpy(zero_copy_only=False)
+    counts = grouped["eigenschappen|eig|aantal verlichtingstoestellen_sum"].to_numpy(zero_copy_only=False)
 
     # Get unique installaties and for each, check if all counts for that installatie are <= {MAX_ARMATURES_PER_COLOR}
     # Use pyarrow.compute to build a mask for each installatie
@@ -92,7 +92,7 @@ def score_C_max_150_armaturen_per_kleur_per_installatie(table: pa.Table) -> floa
     for installatie in unique_installaties:
         mask = pc.equal(grouped['installatie'], installatie)
         # Use pyarrow.compute.filter to get counts for this installatie
-        counts_for_installatie = pc.filter(grouped["eigenschappen - lgc:installatie#vplmast|eig|aantal verlichtingstoestellen_sum"], mask)
+        counts_for_installatie = pc.filter(grouped["eigenschappen|eig|aantal verlichtingstoestellen_sum"], mask)
         # If all counts <= {MAX_ARMATURES_PER_COLOR}, add 25
         if pc.all(pc.less_equal(counts_for_installatie, pa.scalar(MAX_ARMATURES_PER_COLOR))).as_py():
             score += 25
@@ -176,7 +176,7 @@ def score_A_color_for_each_armature(table: pa.Table) -> float:
     non_null_counts = valid_matrix.sum(axis=1)
 
     # Get the 'aantal verlichtingstoestellen' column as numpy array
-    aantallen = table['eigenschappen - lgc:installatie#vplmast|eig|aantal verlichtingstoestellen'].to_numpy(zero_copy_only=False)
+    aantallen = table['eigenschappen|eig|aantal verlichtingstoestellen'].to_numpy(zero_copy_only=False)
     # Calculate mask where all color columns are filled (non-nulls == aantal)
     mask = non_null_counts == aantallen
     # Compute score: 0.01 * aantal where mask is True, else 0

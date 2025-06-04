@@ -1,6 +1,6 @@
 import pyarrow as pa
 
-from assign_colors import combine_columns, split_columns
+from main import combine_columns, split_columns
 
 
 def test_combine_columns():
@@ -66,6 +66,25 @@ def test_combine_columns_first_column_has_value():
     ) is True
 
 
+def test_combine_columns_float():
+    data = {
+        'col1': [1.0, 2.0, None],
+        'col2': [None, None, None],
+        'col3': [None, None, 3.0],
+    }
+    table = pa.table(data)
+    new_table = combine_columns(
+        table,
+        from_columns=['col1', 'col2', 'col3'],
+        to_column='combined',
+        to_type=pa.float64()  # Specify float type
+    )
+    combined_column = new_table.column('combined')
+    assert combined_column.equals(
+        pa.chunked_array([pa.array([1.0, 2.0, 3.0], type=pa.float64())])
+    ) is True
+
+
 def test_split_columns():
     data = {
         'combined': ['A', 'B', 'C'],
@@ -128,3 +147,49 @@ def test_split_columns_unknown_type():
             equals(pa.chunked_array([pa.array([None, None, None], type=pa.string())])) is True)
     assert (new_table.column('eigenschappen - lgc:installatie#vpbevestig|eig|netwerkconfigWV1').
             equals(pa.chunked_array([pa.array([None, None, 'C'], type=pa.string())])) is True)
+
+def test_split_columns_float():
+    data = {
+        'combined': [1.0, None, 3.0],
+        'type': ['lgc:installatie#VPLMast', 'lgc:installatie#VPConsole', 'lgc:installatie#VPBevestig'],
+    }
+    table = pa.table(data)
+    new_table = split_columns(
+        table,
+        from_column='combined',
+        to_columns=[
+            'eigenschappen - lgc:installatie#vplmast|eig|aantal verlichtingstoestellen',
+            'eigenschappen - lgc:installatie#vpconsole|eig|aantal verlichtingstoestellen',
+            'eigenschappen - lgc:installatie#vpbevestig|eig|aantal verlichtingstoestellen',
+        ],
+        to_type=pa.float64()
+    )
+    assert (new_table.column('eigenschappen - lgc:installatie#vplmast|eig|aantal verlichtingstoestellen').
+            equals(pa.chunked_array([pa.array([1.0, None, None], type=pa.float64())])) is True)
+    assert (new_table.column('eigenschappen - lgc:installatie#vpconsole|eig|aantal verlichtingstoestellen').
+            equals(pa.chunked_array([pa.array([None, None, None], type=pa.float64())])) is True)
+    assert (new_table.column('eigenschappen - lgc:installatie#vpbevestig|eig|aantal verlichtingstoestellen').
+            equals(pa.chunked_array([pa.array([None, None, 3.0], type=pa.float64())])) is True)
+
+def test_split_columns_float_missing_type():
+    data = {
+        'combined': [1.0, None, 3.0],
+        'type': ['lgc:installatie#VPLMast', 'lgc:installatie#VPConsole', 'lgc:installatie#VPLMast'],  # last row is VPLMast, not VPBevestig
+    }
+    table = pa.table(data)
+    new_table = split_columns(
+        table,
+        from_column='combined',
+        to_columns=[
+            'eigenschappen - lgc:installatie#vplmast|eig|aantal verlichtingstoestellen',
+            'eigenschappen - lgc:installatie#vpconsole|eig|aantal verlichtingstoestellen',
+            'eigenschappen - lgc:installatie#vpbevestig|eig|aantal verlichtingstoestellen',
+        ],
+        to_type=pa.float64()
+    )
+    assert (new_table.column('eigenschappen - lgc:installatie#vplmast|eig|aantal verlichtingstoestellen').
+            equals(pa.chunked_array([pa.array([1.0, None, 3.0], type=pa.float64())])) is True)
+    assert (new_table.column('eigenschappen - lgc:installatie#vpconsole|eig|aantal verlichtingstoestellen').
+            equals(pa.chunked_array([pa.array([None, None, None], type=pa.float64())])) is True)
+    assert (new_table.column('eigenschappen - lgc:installatie#vpbevestig|eig|aantal verlichtingstoestellen').
+            equals(pa.chunked_array([pa.array([None, None, None], type=pa.float64())])) is True)

@@ -10,7 +10,7 @@ from score_functions import score_E_distance_within_colored_group, score_C_max_1
 
 def test_score_A_color_for_each_armature():
     data = {
-        'eigenschappen - lgc:installatie#vplmast|eig|aantal verlichtingstoestellen': [1, 2, 3, 4, 3],
+        'eigenschappen|eig|aantal verlichtingstoestellen': [1, 2, 3, 4, 3],
          COLOR_COLUMN_NAMES[0]: ['Red', 'Red', 'Red', 'Red', 'Red'],
          COLOR_COLUMN_NAMES[1]: [None, 'Red', 'Red', 'Red', None],
          COLOR_COLUMN_NAMES[2]: [None, None, 'Red', 'Red', None],
@@ -22,7 +22,7 @@ def test_score_A_color_for_each_armature():
 
 def test_score_B_minimize_colors_within_installation():
     data = {
-        'eigenschappen - lgc:installatie#vplmast|eig|aantal verlichtingstoestellen': [2, 2, 2, 2, 2],
+        'eigenschappen|eig|aantal verlichtingstoestellen': [2, 2, 2, 2, 2],
         COLOR_COLUMN_NAMES[0]: ['Red', 'Red', 'Red', 'Red', 'Red'],
         COLOR_COLUMN_NAMES[1]: ['Red', 'Red', 'Red', 'Blue', 'Blue'],
         COLOR_COLUMN_NAMES[2]: [None, None, None, None, None],
@@ -148,7 +148,7 @@ def test_score_F_uniform_color_per_installatie():
 
 def test_score_C_max_150_armaturen_per_kleur_per_installatie():
     data = {
-        'eigenschappen - lgc:installatie#vplmast|eig|aantal verlichtingstoestellen': [100, 50, 40, 150, 160],
+        'eigenschappen|eig|aantal verlichtingstoestellen': [100, 50, 40, 150, 160],
         COLOR_COLUMN_NAMES[0]: ['Red', 'Blue', 'Red', 'Red', 'Red'],
         COLOR_COLUMN_NAMES[1]: ['Red', 'Blue', 'Red', 'Red', 'Red'],
         COLOR_COLUMN_NAMES[2]: ['Red', 'Blue', 'Red', 'Red', 'Red'],

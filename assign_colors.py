@@ -349,7 +349,7 @@ def assign_colors_to_group(grp_dict, group_dict, assigned_points=None):
     print(f"Assigning colors to group {grp_dict['table']['installatie'][0].as_py()}")
     table = grp_dict['table']
     num_rows = table.num_rows
-    aant_col = 'eigenschappen - lgc:installatie#vplmast|eig|aantal verlichtingstoestellen'
+    aant_col = 'eigenschappen|eig|aantal verlichtingstoestellen'
     aant_array = table[aant_col].to_pylist()
     point_cloud = grp_dict['point cloud']
     pc_row_indices = grp_dict['point cloud row indices']
@@ -470,49 +470,3 @@ def assign_colors_to_table(table: pa.Table) -> pa.Table:
     return table
 
 
-def combine_columns(table: pa.Table, from_columns: [str], to_column: str) -> pa.Table:
-    # Convert columns to numpy arrays for fast vectorized selection
-    arrays = [table.column(col).to_numpy(zero_copy_only=False) for col in from_columns]
-    # Stack into a 2D array: shape (num_columns, num_rows)
-    stacked = np.vstack(arrays)
-    # Find the first non-None (not np.nan) value in each column (i.e., for each row)
-    # PyArrow None values become np.object_ dtype with None, so we use a mask
-    mask = stacked != None
-    # For each row, find the first True in mask (i.e., first non-None value)
-    first_non_none_idx = mask.argmax(axis=0)
-    # If all are None, argmax returns 0, but mask[:,i].any() will be False
-    combined = []
-    for i in range(stacked.shape[1]):
-        if mask[:, i].any():
-            combined.append(stacked[first_non_none_idx[i], i])
-        else:
-            combined.append(None)
-    combined_array = pa.array(combined, type=pa.string())
-    return table.append_column(to_column, combined_array)
-
-
-def split_columns(table: pa.Table, from_column: str, to_columns: [str]) -> pa.Table:
-    # Build a mapping from type suffix to output column
-    suffix_to_col = {}
-    for col in to_columns:
-        # Extract the suffix after the last '#' and before the first '|'
-        suffix = col.split('#')[-1].split('|')[0].lower()
-        suffix_to_col[suffix] = col
-
-    types = table.column('type').to_pylist()
-    values = table.column(from_column).to_pylist()
-    result = {col: [None] * len(values) for col in to_columns}
-
-    for i, (t, v) in enumerate(zip(types, values)):
-        # Extract suffix from type value
-        type_suffix = t.split('#')[-1].lower()
-        col = suffix_to_col.get(type_suffix)
-        if col is not None:
-            result[col][i] = v
-
-    for col in to_columns:
-        result[col] = pa.array(result[col], type=pa.string())
-    new_table = table
-    for col in to_columns:
-        new_table = new_table.append_column(col, result[col])
-    return new_table
