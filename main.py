@@ -13,10 +13,9 @@ from score_functions import get_score
 
 
 def convert_csv_to_parquet():
-    # Define the path to the Excel file
-    excel_file = Path(__file__).parent / 'data' / 'export_20250602110914.csv'
-    # Read the Excel file into a PyArrow Table
-    table = csv.read_csv(excel_file, parse_options=csv.ParseOptions(delimiter='\t', newlines_in_values=True))
+    # create_table_from_one_district()
+
+    table = create_table_from_all_districts()
 
     table = combine_columns(table,
         from_columns=[
@@ -89,6 +88,93 @@ def convert_csv_to_parquet():
     # write to parquet file
     parquet_file = Path(__file__).parent / 'data' / 'filtered_data.parquet'
     pq.write_table(filtered_table, parquet_file)
+
+
+def create_table_from_all_districts():
+    # Read all CSV files from /data/csv_per_district and concatenate them, handling different schemas
+    csv_dir = Path(__file__).parent / 'data' / 'csv_per_district'
+    csv_files = list(csv_dir.glob('*.csv'))
+    column_types = {
+        'eigenschappen - lgc:installatie#vplmast|eig|aantal verlichtingstoestellen': pa.float64(),
+        'eigenschappen - lgc:installatie#vpconsole|eig|aantal verlichtingstoestellen': pa.float64(),
+        'eigenschappen - lgc:installatie#vpbevestig|eig|aantal verlichtingstoestellen': pa.float64(),
+        'eigenschappen - lgc:installatie#vvop|eig|aantal verlichtingstoestellen': pa.float64(),
+        'eigenschappen - lgc:installatie#vpbevestig|eig|nummer voedingskring (VPBEVESTIG)': pa.string(),
+        'eigenschappen - lgc:installatie#vpconsole|eig|nummer voedingskring (VPCONSOLE)': pa.string(),
+        'eigenschappen - lgc:installatie#vvop|eig|nummer voedingskring': pa.string(),
+        'eigenschappen - lgc:installatie#vplmast|eig|nummer voedingskring': pa.string(),
+        'eigenschappen - lgc:installatie#vpbevestig|eig|verlichtingstoestel systeemvermogen': pa.float64(),
+        'eigenschappen - lgc:installatie#vpconsole|eig|RAL kleur (VPCONSOLE)': pa.string(),
+        'eigenschappen - lgc:installatie#vplmast|eig|RAL kleur (VPLMAST)': pa.string(),
+        'eigenschappen - lgc:installatie#vvop|eig|RAL kleur': pa.string(),
+        'eigenschappen - lgc:installatie#vplmast|eig|optiek LED': pa.string(),
+        'eigenschappen - lgc:installatie#vpconsole|eig|optiek LED': pa.string(),
+        'eigenschappen - lgc:installatie#vpbevestig|eig|optiek LED': pa.string(),
+        'eigenschappen - lgc:installatie#vvop|eig|optiek LED': pa.string(),
+        'eigenschappen - lgc:installatie#vplmast|eig|armatuurkleur': pa.string(),
+        'eigenschappen - lgc:installatie#vpconsole|eig|armatuurkleur': pa.string(),
+        'eigenschappen - lgc:installatie#vpbevestig|eig|armatuurkleur': pa.string(),
+        'eigenschappen - lgc:installatie#vvop|eig|toestelkleur': pa.string(),
+    }
+    tables = []
+    all_fields = {}
+    # First pass: collect all column names and their types
+    for file in csv_files:
+        t = csv.read_csv(
+            file,
+            parse_options=csv.ParseOptions(delimiter='\t', newlines_in_values=True),
+            convert_options=csv.ConvertOptions(null_values=[''])
+        )
+        for field in t.schema:
+            # Use explicit type if provided, else use detected type
+            if field.name in column_types:
+                all_fields[field.name] = column_types[field.name]
+            elif field.name not in all_fields:
+                all_fields[field.name] = field.type
+        tables.append(t)
+    # Build a unified schema, upcasting null types to string
+    safe_fields = []
+    for name, typ in all_fields.items():
+        if pa.types.is_null(typ):
+            safe_fields.append((name, pa.string()))
+        else:
+            safe_fields.append((name, typ))
+    unified_schema = pa.schema(safe_fields)
+    # Second pass: align all tables to the unified schema (add missing columns as nulls, reorder, and cast to correct type)
+    casted_tables = []
+    for t in tables:
+        cols = []
+        for field in unified_schema:
+            if field.name in t.schema.names:
+                arr = t[field.name]
+                # Cast to the unified type if needed
+                if arr.type != field.type:
+                    # If the target type is null, cast to string instead
+                    target_type = field.type
+                    if pa.types.is_null(target_type):
+                        target_type = pa.string()
+                    try:
+                        arr = arr.cast(target_type)
+                    except Exception as e:
+                        print(f"Error casting column '{field.name}' from {arr.type} to {target_type}")
+                        # Optionally, print some sample values:
+                        print(f"Sample values: {arr.to_pylist()[:10]}")
+                        raise
+                cols.append(arr)
+            else:
+                # Fill missing columns with nulls of the correct type (never null type)
+                fill_type = field.type if not pa.types.is_null(field.type) else pa.string()
+                cols.append(pa.array([None] * t.num_rows, type=fill_type))
+        casted_tables.append(pa.table(cols, schema=unified_schema))
+    table = pa.concat_tables(casted_tables, promote=True)
+    return table
+
+
+def create_table_from_one_district():
+    # Define the path to the Excel file
+    excel_file = Path(__file__).parent / 'data' / 'export_20250602110914.csv'
+    # Read the Excel file into a PyArrow Table
+    table = csv.read_csv(excel_file, parse_options=csv.ParseOptions(delimiter='\t', newlines_in_values=True))
 
 
 def add_installatie(filtered_table: pa.Table) -> pa.Table:
