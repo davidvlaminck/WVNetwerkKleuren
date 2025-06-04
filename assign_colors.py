@@ -468,3 +468,24 @@ def assign_colors_to_table(table: pa.Table) -> pa.Table:
     if updated_tables:
         table = pa.concat_tables(updated_tables, promote=True)
     return table
+
+
+def combine_columns(table, from_columns, to_column):
+    # Convert columns to numpy arrays for fast vectorized selection
+    arrays = [table.column(col).to_numpy(zero_copy_only=False) for col in from_columns]
+    # Stack into a 2D array: shape (num_columns, num_rows)
+    stacked = np.vstack(arrays)
+    # Find the first non-None (not np.nan) value in each column (i.e., for each row)
+    # PyArrow None values become np.object_ dtype with None, so we use a mask
+    mask = stacked != None
+    # For each row, find the first True in mask (i.e., first non-None value)
+    first_non_none_idx = mask.argmax(axis=0)
+    # If all are None, argmax returns 0, but mask[:,i].any() will be False
+    combined = []
+    for i in range(stacked.shape[1]):
+        if mask[:, i].any():
+            combined.append(stacked[first_non_none_idx[i], i])
+        else:
+            combined.append(None)
+    combined_array = pa.array(combined, type=pa.string())
+    return table.append_column(to_column, combined_array)
