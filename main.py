@@ -13,9 +13,9 @@ from score_functions import get_score
 
 
 def convert_csv_to_parquet():
-    # create_table_from_one_district()
+    table = create_table_from_one_district()
 
-    table = create_table_from_all_districts()
+    # table = create_table_from_all_districts()
 
     table = combine_columns(table,
         from_columns=[
@@ -175,7 +175,7 @@ def create_table_from_one_district():
     excel_file = Path(__file__).parent / 'data' / 'export_20250602110914.csv'
     # Read the Excel file into a PyArrow Table
     table = csv.read_csv(excel_file, parse_options=csv.ParseOptions(delimiter='\t', newlines_in_values=True))
-
+    return table
 
 def add_installatie(filtered_table: pa.Table) -> pa.Table:
     def extract_first_part(naampad: str) -> str:

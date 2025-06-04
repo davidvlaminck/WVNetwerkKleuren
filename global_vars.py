@@ -5,7 +5,7 @@ COLOR_COLUMN_NAMES = [
     'eigenschappen|eig|netwerkconfigWV4']
 COLORS = ['Blue', 'Red', 'Green', 'Yellow', 'Cyan', 'Magenta', 'Black', 'Kleurloos']
 DISTANCE_BETWEEN_COLORED_GROUPS = 1000
-START_INSTALLATION = 'A4688' # also test G0563
+START_INSTALLATION = 'A4688' # also test G0563 / WW0051
 MAX_CONNECTION_DISTANCE = 170
 MAX_ARMATURES_PER_COLOR = 150
 

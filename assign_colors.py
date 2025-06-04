@@ -2,6 +2,7 @@ import numpy as np
 import pyarrow as pa
 from ordered_set import OrderedSet
 from shapely.geometry import Point
+from sklearn.cluster import KMeans
 
 from global_vars import COLORS, COLOR_COLUMN_NAMES, DISTANCE_BETWEEN_COLORED_GROUPS, START_INSTALLATION, \
     MAX_ARMATURES_PER_COLOR, MAX_CONNECTION_DISTANCE
@@ -94,177 +95,153 @@ def build_assignments(aant_array, row_to_pc_idx):
             assignments.extend((i, j, pc_idx) for j in range(n_colors))
     return assignments
 
-def split_into_170m_connected_subgroups(assignments, point_cloud, max_size=140):
+def split_into_170m_connected_subgroups(assignments, point_cloud, max_size=MAX_ARMATURES_PER_COLOR):
     """
-    Try to split assignments into 2..6 subgroups, up to 5 attempts per n_groups.
-    For each attempt, use farthest point sampling (first attempt) or random seeds (other attempts).
-    Grow groups by adding closest unassigned point within {MAX_CONNECTION_DISTANCE}m.
-    If all subgroups are {MAX_CONNECTION_DISTANCE}m-connected (score_E_distance_within_colored_group > 0), return the split.
+    Split assignments into the minimum number of subgroups such that:
+    - Each subgroup is a connected component where all points are within MAX_CONNECTION_DISTANCE of at least one other point in the group.
+    - No subgroup exceeds max_size.
+    Returns a list of subgroups (each a list of assignment indices).
+    Ensures all assignments are included. If not, falls back and prints a warning in red.
     """
+    import sys
+    from collections import deque
+    from sklearn.cluster import KMeans, AgglomerativeClustering, DBSCAN
 
     if not assignments:
         return []
     n_assign = len(assignments)
     assignment_points = np.array([point_cloud[pc_idx] for _, _, pc_idx in assignments])
 
-    # Helper to build a dummy table for score_E_distance_within_colored_group
-    def build_dummy_table_for_subgroup(subgroup):
-        # subgroup: list of assignment indices
-        # We need to create a pyarrow table with at least 'installatie', COLOR_COLUMN_NAMES[0], and 'wkb'
-        # We'll use dummy values for 'installatie' and color, and real coordinates
+    # Helper: check if a group is 170m-connected
+    def is_connected(group_indices):
+        if len(group_indices) <= 1:
+            return True
+        visited = set()
+        queue = deque([group_indices[0]])
+        visited.add(group_indices[0])
+        while queue:
+            node = queue.popleft()
+            for other in group_indices:
+                if other not in visited and np.linalg.norm(assignment_points[node] - assignment_points[other]) <= MAX_CONNECTION_DISTANCE:
+                    visited.add(other)
+                    queue.append(other)
+        return len(visited) == len(group_indices)
 
 
-        # Get the point indices for this subgroup
-        pc_indices = [assignments[i][2] for i in subgroup]
-        # Use the first color column for all
-        color_col = [ "TestColor" ] * len(subgroup)
-        installatie_col = [ "TestInstallatie" ] * len(subgroup)
-        # Build WKB column
-        wkb_col = []
-        for idx in pc_indices:
-            pt = Point(point_cloud[idx])
-            wkb_col.append(pt.wkb)
-        return pa.table({
-            "installatie": installatie_col,
-            COLOR_COLUMN_NAMES[0]: color_col,
-            "wkb": wkb_col
-        })
-
-    for n_groups in range(2, 7):
-        for attempt in range(5):
-            # Seed selection
-            if attempt == 0:
-                # Farthest point sampling
-                seeds = []
-                used = set()
-                seeds.append(0)
-                used.add(0)
-                for _ in range(1, n_groups):
-                    dists_to_seeds = np.min(
-                        np.linalg.norm(assignment_points[np.newaxis, :, :] - assignment_points[seeds, :][:, np.newaxis, :], axis=2),
-                        axis=0
-                    )
-                    for idx in np.argsort(-dists_to_seeds):
-                        if idx not in used:
-                            seeds.append(idx)
-                            used.add(idx)
-                            break
-            else:
-                # Random seeds
-                seeds = sorted(np.random.choice(n_assign, n_groups, replace=False).tolist())
-            # Each seed forms the initial member of a group
-            groups = [[seed] for seed in seeds]
-            assigned = set(seeds)
-            # Grow each group by adding the closest unassigned point within {MAX_CONNECTION_DISTANCE}m
-            for _ in range(max_size):
-                any_added = False
-                for group in groups:
-                    if len(assigned) >= n_assign:
-                        break
-                    if len(group) >= max_size:
+    # Try from the minimal number of groups upwards
+    min_groups = int(np.ceil(n_assign / max_size))
+    max_attempts = 10
+    clustering_methods = ['kmeans', 'agglomerative', 'agglomerative_distance', 'dbscan']
+    for n_groups in range(min_groups, n_assign + 1):
+        for method in clustering_methods:
+            for attempt in range(max_attempts):
+                if n_groups == 1 and method != 'dbscan':
+                    labels = np.zeros(n_assign, dtype=int)
+                elif method == 'kmeans':
+                    kmeans = KMeans(n_clusters=n_groups, n_init=1, random_state=attempt)
+                    labels = kmeans.fit_predict(assignment_points)
+                elif method == 'agglomerative':
+                    agg = AgglomerativeClustering(n_clusters=n_groups, linkage='ward')
+                    labels = agg.fit_predict(assignment_points)
+                elif method == 'agglomerative_distance':
+                    # Only try this once per n_groups, since it doesn't use n_clusters
+                    if attempt > 0:
                         continue
-                    group_points = assignment_points[group]
-                    dists = np.linalg.norm(group_points[:, None, :] - assignment_points[None, :, :], axis=2)
-                    dists[:, list(assigned)] = np.inf
-                    min_dist = np.min(dists, axis=0)
-                    candidates = np.where((min_dist <= MAX_CONNECTION_DISTANCE) & (~np.isinf(min_dist)))[0]
-                    if len(candidates) == 0:
+                    agg = AgglomerativeClustering(distance_threshold=MAX_CONNECTION_DISTANCE, n_clusters=None, linkage='single')
+                    labels = agg.fit_predict(assignment_points)
+                    n_clusters = labels.max() + 1
+                    # If too many clusters, skip
+                    if n_clusters < n_groups:
                         continue
-                    next_idx = candidates[np.argmin(min_dist[candidates])]
-                    group.append(next_idx)
-                    assigned.add(next_idx)
-                    any_added = True
-                    if len(assigned) == n_assign:
-                        break
-                if not any_added:
-                    break
-            # Handle any remaining unassigned points
-            unassigned = set(range(n_assign)) - assigned
-            for idx in list(unassigned):
-                added = False
-                for group in groups:
-                    if len(group) >= max_size:
+                elif method == 'dbscan':
+                    # Only try this once per n_groups, since it doesn't use n_clusters
+                    if attempt > 0:
                         continue
-                    group_points = assignment_points[group]
-                    dists = np.linalg.norm(group_points - assignment_points[idx], axis=1)
-                    if np.any(dists <= MAX_CONNECTION_DISTANCE):
-                        group.append(idx)
-                        assigned.add(idx)
-                        added = True
-                        break
-                if not added:
-                    groups.append([idx])
-                    assigned.add(idx)
-            # Check if all groups are {MAX_CONNECTION_DISTANCE}m-connected
-            all_good = True
-            for group in groups:
-                if len(group) == 0:
+                    db = DBSCAN(eps=MAX_CONNECTION_DISTANCE, min_samples=1)
+                    labels = db.fit_predict(assignment_points)
+                    n_clusters = labels.max() + 1
+                    if n_clusters < n_groups:
+                        continue
+                else:
                     continue
-                dummy_table = build_dummy_table_for_subgroup(group)
-                if score_E_distance_within_colored_group(dummy_table) == 0:
-                    all_good = False
-                    break
-            if all_good:
-                return [group for group in groups if len(group) > 0]
-    # Fallback: original logic with n_groups based on max_size
-    n_groups = int(np.ceil(n_assign / max_size))
-    if n_groups < 2:
-        n_groups = 2
-    seeds = []
-    used = set()
-    seeds.append(0)
-    used.add(0)
-    for _ in range(1, n_groups):
-        dists_to_seeds = np.min(
-            np.linalg.norm(assignment_points[np.newaxis, :, :] - assignment_points[seeds, :][:, np.newaxis, :], axis=2),
-            axis=0
-        )
-        for idx in np.argsort(-dists_to_seeds):
-            if idx not in used:
-                seeds.append(idx)
-                used.add(idx)
-                break
-    groups = [[seed] for seed in seeds]
-    assigned = set(seeds)
-    for _ in range(max_size):
-        any_added = False
-        for group in groups:
-            if len(assigned) >= n_assign:
-                break
-            if len(group) >= max_size:
-                continue
-            group_points = assignment_points[group]
-            dists = np.linalg.norm(group_points[:, None, :] - assignment_points[None, :, :], axis=2)
-            dists[:, list(assigned)] = np.inf
-            min_dist = np.min(dists, axis=0)
-            candidates = np.where((min_dist <= MAX_CONNECTION_DISTANCE) & (~np.isinf(min_dist)))[0]
-            if len(candidates) == 0:
-                continue
-            next_idx = candidates[np.argmin(min_dist[candidates])]
-            group.append(next_idx)
-            assigned.add(next_idx)
-            any_added = True
-            if len(assigned) == n_assign:
-                break
-        if not any_added:
-            break
-    unassigned = set(range(n_assign)) - assigned
-    for idx in list(unassigned):
-        added = False
-        for group in groups:
-            if len(group) >= max_size:
-                continue
-            group_points = assignment_points[group]
-            dists = np.linalg.norm(group_points - assignment_points[idx], axis=1)
-            if np.any(dists <= MAX_CONNECTION_DISTANCE):
-                group.append(idx)
-                assigned.add(idx)
-                added = True
-                break
-        if not added:
-            groups.append([idx])
-            assigned.add(idx)
-    return [group for group in groups if len(group) > 0]
+
+                # Build groups
+                if method in ['agglomerative_distance', 'dbscan']:
+                    unique_labels = set(labels)
+                    groups = []
+                    for g in unique_labels:
+                        group = np.where(labels == g)[0].tolist()
+                        if not group:
+                            continue
+                        # If group is too large, split further
+                        if len(group) > max_size:
+                            # Split by BFS on the distance graph
+                            subgroups = []
+                            group_set = set(group)
+                            while group_set:
+                                start = group_set.pop()
+                                queue = deque([start])
+                                chunk = []
+                                chunk_set = set([start])
+                                while queue and len(chunk) < max_size:
+                                    node = queue.popleft()
+                                    chunk.append(node)
+                                    for other in group_set.copy():
+                                        if np.linalg.norm(assignment_points[node] - assignment_points[other]) <= MAX_CONNECTION_DISTANCE:
+                                            queue.append(other)
+                                            chunk_set.add(other)
+                                            group_set.remove(other)
+                                            if len(chunk) >= max_size:
+                                                break
+                                subgroups.append(chunk)
+                            groups.extend(subgroups)
+                        else:
+                            groups.append(group)
+                else:
+                    groups = []
+                    for g in range(n_groups):
+                        group = np.where(labels == g)[0].tolist()
+                        if not group:
+                            continue
+                        # If group is too large, split further
+                        if len(group) > max_size:
+                            # Split by BFS on the distance graph
+                            subgroups = []
+                            group_set = set(group)
+                            while group_set:
+                                start = group_set.pop()
+                                queue = deque([start])
+                                chunk = []
+                                chunk_set = set([start])
+                                while queue and len(chunk) < max_size:
+                                    node = queue.popleft()
+                                    chunk.append(node)
+                                    for other in group_set.copy():
+                                        if np.linalg.norm(assignment_points[node] - assignment_points[other]) <= MAX_CONNECTION_DISTANCE:
+                                            queue.append(other)
+                                            chunk_set.add(other)
+                                            group_set.remove(other)
+                                            if len(chunk) >= max_size:
+                                                break
+                                subgroups.append(chunk)
+                            groups.extend(subgroups)
+                        else:
+                            groups.append(group)
+                # Check all constraints
+                all_indices = set()
+                valid = True
+                for group in groups:
+                    all_indices.update(group)
+                    if len(group) > max_size or not is_connected(group):
+                        valid = False
+                        break
+                if valid and len(all_indices) == n_assign:
+                    print(f"Split into {len(groups)} subgroups, all constraints satisfied (method: {method}, attempt: {attempt+1}).")
+                    return groups
+
+    # Fallback: each assignment in its own group, print in red
+    print("\033[91m" + "WARNING: Could not find a valid split with all constraints! Falling back to singleton groups." + "\033[0m", file=sys.stderr)
+    return [[i] for i in range(n_assign)]
 
 
 def assign_colors_to_subgroups(table, assignments, subgroups, point_cloud, group_dict, orig_key, used_colors):
